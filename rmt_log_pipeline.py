@@ -1418,14 +1418,17 @@ def parse_platform_info(text: str, source_name: str) -> dict[str, Any]:
     # are ALL-CAPS while "detected" is lowercase — this separates them cleanly.
     P_DDRTY  = re.compile(r"(DDR\d(?:\s+[A-Z][A-Z0-9]+)?)\s+detected.*?Rev:\s*([\d.]+)")
     P_NODIM  = re.compile(r"No\s+DIMM\s+detected", re.I)
-    P_RANKS  = re.compile(r"Ranks:\s*(\d+)")
-    P_SCAP   = re.compile(r"SDRAM\s+Capacity:\s*(\d+)\s*Mb")
-    P_DSIZ   = re.compile(r"DIMM\s+size:\s*(\d+)\s*MByte")
-    P_SDWID  = re.compile(r"SDRAM\s+device\s+width:\s*(\d+)")
-    P_BUSWID = re.compile(r"Primary\s+bus\s+width:\s*(\d+)")
-    P_BANKS  = re.compile(r"(\d+)\s+Banks\s+in\s+(\d+)\s+groups")
-    P_ECC    = re.compile(r"ECC\s+is\s+(not\s+)?supported")
-    P_PMIC   = re.compile(r"PMIC\s+type:\s*(\d+)")
+    # Per-DIMM field patterns are anchored to the start of the line: the SPD
+    # block has no end marker, so unanchored patterns would also match later
+    # lines such as "Outputs->MaxRanks: 2" and corrupt the last slot.
+    P_RANKS  = re.compile(r"^\s*Ranks:\s*(\d+)")
+    P_SCAP   = re.compile(r"^\s*SDRAM\s+Capacity:\s*(\d+)\s*Mb")
+    P_DSIZ   = re.compile(r"^\s*DIMM\s+size:\s*(\d+)\s*MByte")
+    P_SDWID  = re.compile(r"^\s*SDRAM\s+device\s+width:\s*(\d+)")
+    P_BUSWID = re.compile(r"^\s*Primary\s+bus\s+width:\s*(\d+)")
+    P_BANKS  = re.compile(r"^\s*(\d+)\s+Banks\s+in\s+(\d+)\s+groups")
+    P_ECC    = re.compile(r"^\s*ECC\s+is\s+(not\s+)?supported")
+    P_PMIC   = re.compile(r"^\s*PMIC\s+type:\s*(\d+)")
     P_CTCD   = re.compile(r"Controller/Channel/Dimm:\s*(\d+/\d+/\d+)")
     P_DRID   = re.compile(r"DramIdCode:\s*(0x[0-9A-Fa-f]+)")
     P_DTCD   = re.compile(r"DateCode:\s*(0x[0-9A-Fa-f]+)")
@@ -1518,6 +1521,8 @@ def parse_platform_info(text: str, source_name: str) -> dict[str, Any]:
                 d["module_type"] = m.group(1).strip()
                 d["spd_rev"] = m.group(2)
                 continue
+            # First value wins: each block is re-initialised on its header, so
+            # any later match can only come from unrelated log lines.
             for pat, key, cvt in [
                 (P_RANKS,  "ranks",            int),
                 (P_SCAP,   "sdram_capacity_mb", int),
@@ -1526,14 +1531,15 @@ def parse_platform_info(text: str, source_name: str) -> dict[str, Any]:
                 (P_BUSWID, "bus_width",         int),
                 (P_PMIC,   "pmic_type",         str),
             ]:
-                mm = pat.search(line)
-                if mm:
-                    d[key] = cvt(mm.group(1))
-            mm = P_BANKS.search(line)
+                if d[key] is None:
+                    mm = pat.search(line)
+                    if mm:
+                        d[key] = cvt(mm.group(1))
+            mm = P_BANKS.search(line) if d["banks"] is None else None
             if mm:
                 d["banks"] = int(mm.group(1))
                 d["bank_groups"] = int(mm.group(2))
-            mm = P_ECC.search(line)
+            mm = P_ECC.search(line) if d["ecc"] is None else None
             if mm:
                 d["ecc"] = mm.group(1) is None   # None = "ECC is supported"
 
