@@ -1,0 +1,15 @@
+# Local virtual environment created by setup.bat
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Per-session GUI debug logs (rmt_gui.py writes here)
+logs/
+
+# Generated analysis artifacts
+rmt_jmp_charts.jsl
+jmp_charts/
+*.xlsx
+*.pptx

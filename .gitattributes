@@ -1,0 +1,10 @@
+# Normalize text files in the repository; check out with native line endings.
+* text=auto
+
+# cmd.exe mis-parses labels (call :label / goto) in LF-only batch files.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png  binary
+*.pptx binary
+*.xlsx binary

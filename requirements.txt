@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------------------
+# RMT Margin Analysis Tool - Python dependencies
+#
+# Installed into the local .venv by setup.bat. Versions are pinned so every
+# machine reproduces the same, validated environment.
+#
+# NOTE: JMP Pro is NOT listed here on purpose. It is a licensed Windows
+#       desktop application and must come from the machine's own JMP
+#       installation (default: C:\Program Files\SAS\JMPPRO\17\jmp.exe).
+#       tkinter is also absent: it ships with the CPython Windows installer.
+# ---------------------------------------------------------------------------
+
+# Excel (.xlsx) workbook generation and reading - rmt_log_pipeline.py,
+# rmt_pipeline_runner.py
+openpyxl==3.1.5
+
+# PowerPoint (.pptx) deck generation - rmt_log_pipeline.py
+python-pptx==1.0.2
+
+# Optional: only used by rmt_gui.py for PIL.ImageGrab clipboard screenshots.
+# The GUI degrades gracefully when it is missing, but it is installed by
+# default so the feature works out of the box.
+pillow==12.2.0
