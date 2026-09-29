@@ -13,6 +13,9 @@ Open the cloned repository folder and double-click **`setup.bat`**, or run it fr
 ```
 
 This creates the local `.venv` and installs all Python dependencies. You only do this once per machine.
+Behind the Intel network, add a proxy: `.\setup.bat --proxy http://proxy-chain.intel.com:912`.
+If setup reports an `INVALID` proxy (e.g. `http://proxy-server:port`), see
+[Setup fails with a proxy error](README.md#setup-fails-with-a-proxy-error).
 JMP Pro is not installed by setup — it must already exist as a Windows application; setup just reports where it found it.
 
 > Prefer a GUI? Double-click **`Launch_RMT_GUI.bat`** after setup and skip the rest of this guide.

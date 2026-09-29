@@ -10,9 +10,10 @@ REM  Windows desktop application. This script only detects the existing
 REM  installation and reports where it found it.
 REM
 REM  Usage:
-REM     setup.bat              Create/refresh the environment
-REM     setup.bat --recreate   Delete .venv and build it from scratch
-REM     setup.bat --help       Show this help
+REM     setup.bat                     Create/refresh the environment
+REM     setup.bat --recreate          Delete .venv and build it from scratch
+REM     setup.bat --proxy <url>       Use this proxy for pip (this run only)
+REM     setup.bat --help              Show this help
 REM ===================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 
@@ -21,7 +22,9 @@ if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 set "VENV_DIR=%SCRIPT_DIR%\.venv"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 set "REQ_FILE=%SCRIPT_DIR%\requirements.txt"
+set "PROXY_CHECK=%SCRIPT_DIR%\scripts\check_proxy.py"
 set "RECREATE=0"
+set "PROXY_ARG="
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -30,6 +33,14 @@ if /I "%~1"=="-r"         set "RECREATE=1"
 if /I "%~1"=="--help"     goto usage
 if /I "%~1"=="-h"         goto usage
 if /I "%~1"=="/?"         goto usage
+if /I "%~1"=="--proxy" (
+    if "%~2"=="" (
+        echo [ERROR] --proxy needs a URL, e.g. --proxy http://proxy-chain.intel.com:912
+        goto fail
+    )
+    set "PROXY_ARG=%~2"
+    shift
+)
 shift
 goto parse_args
 :args_done
@@ -134,8 +145,21 @@ REM  Step 3/5 - Install the pinned dependencies
 REM ---------------------------------------------------------------
 echo.
 echo [3/5] Installing dependencies from requirements.txt...
-echo       ^(behind the Intel network a proxy may be required, e.g.
-echo        set HTTPS_PROXY=http://proxy-chain.intel.com:912^)
+
+REM --proxy overrides every other proxy source for this process only.
+REM PIP_PROXY beats pip.ini; HTTP(S)_PROXY replace any inherited values.
+if defined PROXY_ARG (
+    set "PIP_PROXY=!PROXY_ARG!"
+    set "HTTP_PROXY=!PROXY_ARG!"
+    set "HTTPS_PROXY=!PROXY_ARG!"
+    echo       Using proxy for this run: !PROXY_ARG!
+)
+
+REM Fail fast with a precise message instead of pip's "Failed to parse" OSError.
+if exist "%PROXY_CHECK%" (
+    "%VENV_PY%" "%PROXY_CHECK%"
+    if errorlevel 1 goto fail
+)
 echo.
 
 "%VENV_PY%" -m pip install --upgrade pip --disable-pip-version-check
@@ -149,10 +173,8 @@ if errorlevel 1 (
     echo.
     echo [ERROR] Dependency installation failed.
     echo         Most common cause: no network / proxy not configured.
-    echo         Try:
-    echo             set HTTPS_PROXY=http://proxy-chain.intel.com:912
-    echo             set HTTP_PROXY=http://proxy-chain.intel.com:912
-    echo             setup.bat
+    echo         Behind the Intel network, re-run with a proxy:
+    echo             setup.bat --proxy http://proxy-chain.intel.com:912
     goto fail
 )
 
@@ -251,9 +273,11 @@ goto :eof
 echo.
 echo RMT Margin Analysis Tool - setup.bat
 echo.
-echo   setup.bat              Create .venv and install requirements.txt
-echo   setup.bat --recreate   Delete .venv first, then rebuild it
-echo   setup.bat --help       Show this help
+echo   setup.bat                   Create .venv and install requirements.txt
+echo   setup.bat --recreate        Delete .venv first, then rebuild it
+echo   setup.bat --proxy ^<url^>     Use this proxy for pip, this run only
+echo                               e.g. --proxy http://proxy-chain.intel.com:912
+echo   setup.bat --help            Show this help
 echo.
 echo JMP Pro is never installed by this script - it must already be present
 echo as a Windows application. setup.bat only detects and reports it.

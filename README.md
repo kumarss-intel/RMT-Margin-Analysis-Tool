@@ -164,14 +164,21 @@ From this folder, double-click `setup.bat` or run:
 
 1. Locate a Python 3.10+ interpreter (prefers `C:\Program Files\Python314`, then the `py` launcher, then `PATH`)
 2. Create the local virtual environment `.venv`
-3. Install the pinned dependencies from [requirements.txt](requirements.txt) (`openpyxl`, `python-pptx`, `pillow`)
-4. Verify every package imports correctly
-5. Detect the existing JMP installation and report its path (warns, but does not fail, when JMP is absent)
+3. Check the proxy settings pip will use and stop with a clear message if one is malformed (see [Setup fails with a proxy error](#setup-fails-with-a-proxy-error))
+4. Install the pinned dependencies from [requirements.txt](requirements.txt) (`openpyxl`, `python-pptx`, `pillow`)
+5. Verify every package imports correctly
+6. Detect the existing JMP installation and report its path (warns, but does not fail, when JMP is absent)
 
 To rebuild the environment from scratch:
 
 ```powershell
 .\setup.bat --recreate
+```
+
+Behind the Intel network, pass a proxy for the install (this run only):
+
+```powershell
+.\setup.bat --proxy http://proxy-chain.intel.com:912
 ```
 
 ### Running the tool
@@ -205,6 +212,7 @@ Without JMP, log parsing, CSV, Excel and the HTML report all still work, and `--
 |------|---------|----------|
 | [README.md](README.md) | This index (you are here) | Everyone |
 | [setup.bat](setup.bat) | One-time environment setup (`.venv` + dependencies) | Everyone |
+| [scripts/check_proxy.py](scripts/check_proxy.py) | Proxy pre-flight check run by `setup.bat` | Troubleshooting |
 | [requirements.txt](requirements.txt) | Pinned Python dependencies | Everyone |
 | [RMT_QUICKSTART.md](RMT_QUICKSTART.md) | 5-minute beginner guide | New users |
 | [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md) | Complete reference manual | Advanced users |
@@ -240,6 +248,27 @@ Without JMP, log parsing, CSV, Excel and the HTML report all still work, and `--
 ---
 
 ## 🐛 Troubleshooting
+
+### Setup fails with a proxy error
+
+Symptom: `ERROR: Could not install packages due to an OSError: Failed to parse: http://proxy-server:port`
+
+A proxy on your machine is set to a template placeholder (the port must be a number).
+It usually comes from a `proxy =` line in a pip config file such as `%APPDATA%\pip\pip.ini`,
+or from the `PIP_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` environment variables. `setup.bat`
+now prints the exact source. Fix it in either of these ways:
+
+```powershell
+# Quick: use a valid proxy for this setup run only
+.\setup.bat --proxy http://proxy-chain.intel.com:912
+
+# Permanent: find and correct the pip config file
+.venv\Scripts\python.exe -m pip config debug
+.venv\Scripts\python.exe -m pip config set global.proxy http://proxy-chain.intel.com:912
+```
+
+For an environment variable, fix or delete it under Windows Settings >
+"Edit environment variables for your account", then open a new terminal.
 
 ### Script won't start
 ```powershell

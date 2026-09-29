@@ -102,7 +102,9 @@ workspace root reported in the environment context and confirm
 `rmt_log_pipeline.py` exists there — still never a hardcoded user-specific path.
 
 If `$py` is missing: run `& (Join-Path $tool "setup.bat")` (add `--recreate` if
-the venv is broken).
+the venv is broken). If setup stops with a proxy marked `INVALID` (e.g. the
+placeholder `http://proxy-server:port`), ask the user for their proxy and re-run
+with `--proxy <url>` (Intel network: `http://proxy-chain.intel.com:912`).
 If `$jmp` is empty: tell the user JMP Pro was not found and run base mode (CSV +
 Excel + HTML + native PPT still work without JMP).
 
