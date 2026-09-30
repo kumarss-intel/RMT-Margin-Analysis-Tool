@@ -151,6 +151,18 @@ output_dir/
 - Windows
 - Python 3.10+ (3.14 recommended) installed with the **tcl/tk and IDLE** option, so `tkinter` is available for the GUI
 - Optional: SAS JMP Pro (licensed Windows install) for the JMP chart and PPT stages
+- Access to this private repository (ask the owner to add you as a collaborator)
+
+### Get the code
+
+```powershell
+git clone https://github.com/kumarss-intel/RMT-Margin-Analysis-Tool.git
+cd RMT-Margin-Analysis-Tool
+```
+
+Use `git clone` rather than **Download ZIP**, so you can pick up fixes later with `git pull`.
+If the clone fails with `Unsupported proxy syntax in 'proxy-server:port'`, see
+[Cloning behind a broken proxy](#cloning-behind-a-broken-proxy).
 
 ### One-time setup
 
@@ -248,6 +260,50 @@ Without JMP, log parsing, CSV, Excel and the HTML report all still work, and `--
 ---
 
 ## 🐛 Troubleshooting
+
+### Cloning behind a broken proxy
+
+Symptom:
+`fatal: unable to access 'https://github.com/...': Unsupported proxy syntax in 'proxy-server:port': Port number was not a decimal number between 0 and 65535`
+
+A proxy on your machine is still set to the template placeholder `proxy-server:port`,
+so git (and pip) cannot connect. Get the tool first, then fix the setting at its source.
+
+**1. Clone and set up, passing a valid proxy each time:**
+
+```powershell
+git -c http.proxy=http://proxy-chain.intel.com:912 clone https://github.com/kumarss-intel/RMT-Margin-Analysis-Tool.git
+cd RMT-Margin-Analysis-Tool
+.\setup.bat --proxy http://proxy-chain.intel.com:912
+```
+
+**2. Save the proxy for this repository** so that later `git pull` commands work.
+The `-c` option above applied only to the clone; the saved value takes precedence
+over both the broken git setting and the environment variables:
+
+```powershell
+git config http.proxy http://proxy-chain.intel.com:912
+```
+
+**3. Recommended: find the placeholder and fix it at its source**, because other tools on the
+machine will keep failing until you do:
+
+```powershell
+git config --show-origin --get-all http.proxy
+git config --show-origin --get-all https.proxy
+foreach($s in 'User','Machine'){ foreach($k in 'HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','PIP_PROXY'){
+  $v=[Environment]::GetEnvironmentVariable($k,$s); if($v){ "$s  $k = $v" } } }
+```
+
+| Placeholder shown in | Fix |
+|---|---|
+| git config, `global` file | `git config --global http.proxy http://proxy-chain.intel.com:912` (or `--unset http.proxy`) |
+| git config, `system` file | Same with `--system`, from an administrator PowerShell |
+| `User` environment variable | `[Environment]::SetEnvironmentVariable('HTTPS_PROXY','http://proxy-chain.intel.com:912','User')` (repeat for `HTTP_PROXY`) |
+| `Machine` environment variable | Same with `'Machine'` from an administrator PowerShell, or ask IT if it was pushed by policy |
+
+Open a new terminal after changing an environment variable. Use your site's proxy
+(for example `proxy-iind.intel.com:912`) if `proxy-chain` does not work for you.
 
 ### Setup fails with a proxy error
 

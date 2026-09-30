@@ -6,7 +6,17 @@
 
 ### Step 0: One-time environment setup
 
-Open the cloned repository folder and double-click **`setup.bat`**, or run it from PowerShell:
+Clone the repository (use `git clone` rather than Download ZIP, so `git pull` works later):
+
+```powershell
+git clone https://github.com/kumarss-intel/RMT-Margin-Analysis-Tool.git
+cd RMT-Margin-Analysis-Tool
+```
+
+If the clone fails with `Unsupported proxy syntax in 'proxy-server:port'`, see
+[Cloning behind a broken proxy](README.md#cloning-behind-a-broken-proxy).
+
+Then double-click **`setup.bat`** in the cloned folder, or run it from PowerShell:
 
 ```powershell
 .\setup.bat
