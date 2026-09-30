@@ -17,8 +17,8 @@
       -StartMenu    Start > All apps > MarginIQ
       -QuickLaunch  %APPDATA%\Microsoft\Internet Explorer\Quick Launch\MarginIQ.lnk
       -Taskbar      Start-menu shortcut + pin attempt. Windows 10 1809+ / 11 block
-                    programmatic pinning; the script then opens Explorer on the
-                    shortcut and prints the one-click manual steps.
+                    programmatic pinning; the script then prints the one-click
+                    manual steps (no window is opened).
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create_shortcuts.ps1 -Desktop -Local -StartMenu
@@ -196,7 +196,6 @@ if ($Taskbar) {
         Write-Host '      Windows does not allow scripts to pin to the taskbar, so finish with one click:'
         Write-Host '        Start > All apps > MarginIQ  -> right-click -> Pin to taskbar'
         Write-Host '        (or launch MarginIQ, right-click its taskbar button -> Pin to taskbar)'
-        try { Start-Process explorer.exe -ArgumentList "/select,`"$startLnk`"" } catch { }
     }
 }
 

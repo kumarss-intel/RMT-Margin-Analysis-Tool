@@ -129,10 +129,9 @@ Each prompt defaults to **No** after 30 seconds, so setup never hangs.
 
 > **Why the taskbar needs one click from you.** Since Windows 10 (1809), Windows blocks
 > programs from pinning themselves to the taskbar. When you answer **Y**, setup creates the
-> Start-menu shortcut, tries to pin, and if Windows refuses it opens Explorer on the shortcut
-> and prints the steps. Right-click **MarginIQ** ▸ *Pin to taskbar* (Windows 11: *Show more
-> options* ▸ *Pin to taskbar*). Alternatively, start MarginIQ and right-click its taskbar
-> button ▸ *Pin to taskbar*.
+> Start-menu shortcut, tries to pin, and if Windows refuses it prints the steps (no window is
+> opened). Open *Start ▸ All apps*, right-click **MarginIQ** ▸ *Pin to taskbar*. Alternatively,
+> start MarginIQ and right-click its taskbar button ▸ *Pin to taskbar*.
 >
 > The GUI and its shortcuts share the AppUserModelID `Intel.CCG.CVE.MarginIQ`, so the running
 > window always shows the MarginIQ icon and groups under the pinned button.
