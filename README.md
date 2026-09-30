@@ -1,156 +1,84 @@
-# RMT Margin Analysis Tool
+# MarginIQ
 
-This repository is the self-contained home of the RMT Margin Analysis Tool: everything needed to extract and analyze **START_RMT data blocks** from MRC debug logs.
+### Intel CCG CVE DDR5 RMT Margin Analysis Tool
 
-> **First time here?** Run [`setup.bat`](setup.bat) once. It creates a local `.venv` and installs every Python dependency. JMP Pro is *not* installed by setup — it must already be present as a Windows application.
+<img src="assets/marginiq.png" alt="MarginIQ icon" width="72" align="right">
 
-## 📋 Available Tools
+**MarginIQ** (v2.0.0) turns Intel MRC debug logs into margin analysis. It extracts every
+`START_RMT` (Rank Margin Tool) block and produces CSV, Excel, an interactive HTML report
+(including DDR5 Mode Register and ODT tabs), PowerPoint decks and optional JMP Pro charts.
+It is project-agnostic: Nova Lake, Wildcat Lake and future platforms are listed in
+[`projects.json`](projects.json).
 
-### 1. **RMT Pipeline Wrapper** (Easiest)
-**File:** `rmt_pipeline_runner.py`
+You can drive it in three ways:
 
-User-friendly interactive interface for running the RMT extraction pipeline.
-
-**Best for:** First-time users, interactive workflows, ad-hoc analyses
-
-**Quick start:**
-```powershell
-python "rmt_pipeline_runner.py"
-```
-
-**Features:**
-- 📚 Interactive menu with per-stage descriptions
-- 🎯 Step-by-step path input prompts
-- 🖼️ JMP chart generation and PPT assembly
-- ❌ Clear error messages with solutions
-- `--help` shows full stage/field/axis reference
-- `--cmds` prints copy-paste CLI commands for all stages
-
-**Learn more:** See [RMT_QUICKSTART.md](RMT_QUICKSTART.md)
+| Mode | Best for | Entry point |
+|------|----------|-------------|
+| 🖥️ **GUI** | Day-to-day lab analysis, axis tuning, JMP Graph Builder | **MarginIQ** desktop icon / `Launch_RMT_GUI.bat` |
+| 🤖 **Agentic** (GitHub Copilot) | "Plot these logs for me" from chat, no clicks | Copilot Chat in **Agent** mode ([details](#-agentic-mode-github-copilot)) |
+| ⌨️ **CLI** | Scripts, batch jobs, CI | `.venv\Scripts\python.exe rmt_log_pipeline.py` |
 
 ---
 
-### 2. **RMT Pipeline Core Script**
-**File:** `rmt_log_pipeline.py`
+## 📑 Contents
 
-Main extraction and analysis engine. Powers both the wrapper and direct CLI usage.
-
-**Best for:** Automation, batch processing, CI/CD integration, advanced users
-
-**Quick start (Stage 2: CSV + Excel):**
-```powershell
-python "rmt_log_pipeline.py" `
-  --input "C:\path\to\logs" `
-  --pattern "*.txt" `
-  --outdir "C:\path\to\output"
-```
-
-**Features:**
-- 📄 CSV extraction in standard + extended formats
-- 📊 Excel workbooks with multi-sheet pivot-ready output
-- 📈 PowerPoint presentations with charts
-- 🎨 JMP chart generation with CLI automation
-- ✅ Approval workflow for chart generation
-- 🛑 Hard-stop on denial with exit codes
-
-**Learn more:** See [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md)
+1. [What's new in 2.0](#-whats-new-in-20)
+2. [Quick start](#-quick-start)
+3. [Installation & setup](#-installation--setup) — incl. [desktop / taskbar shortcuts](#desktop-taskbar-and-start-menu-shortcuts)
+4. [Using the GUI](#-using-the-gui)
+5. [Agentic mode (GitHub Copilot)](#-agentic-mode-github-copilot)
+6. [Command line](#-command-line)
+7. [HTML report](#-html-report)
+8. [Configuration](#-configuration) — projects, axis settings, default ±Ref
+9. [Output structure](#-output-structure) and [column reference](#-column-reference)
+10. [Documentation files](#-documentation-files)
+11. [FAQ](#-frequently-asked-questions)
+12. [Troubleshooting](#-troubleshooting)
 
 ---
 
-## 🚀 Quick Navigation
+## ✨ What's new in 2.0
 
-| Goal | Start Here | Command |
-|------|-----------|--------|
-| First time using? | [RMT_QUICKSTART.md](RMT_QUICKSTART.md) | `python rmt_pipeline_runner.py` |
-| See all options? | Run the script | `python rmt_pipeline_runner.py --help` |
-| Copy-paste CLI commands? | Run the script | `python rmt_pipeline_runner.py --cmds` |
-| Need full CLI reference? | [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md) | `python rmt_log_pipeline.py --help` |
-
----
-
-## 📦 Workflow Stages
-
-The pipeline supports 4 stages of increasing output. **Stage 4 is the default.**
-
-| Stage | Output | Default? | Approx. time |
-|-------|--------|---------|--------------|
-| **1** | CSV | | 🚀 ~30 sec |
-| **2** | CSV + Excel | | ⚡ 1-2 min |
-| **3** | CSV + Excel + JMP Charts | | 🎨 3-5 min |
-| **4** | CSV + Excel + JMP Charts + PPT | ✅ yes | 📑 3-5 min |
+| Area | Change |
+|------|--------|
+| Branding | Product name **MarginIQ** with the subtitle *Intel CCG CVE DDR5 RMT Margin Analysis Tool* in the GUI, HTML report and PPT. Version via `--version` or Help ▸ About. |
+| Icon & shortcuts | Unique MarginIQ icon ([`assets/marginiq.ico`](assets/marginiq.ico)) on the GUI window, taskbar button and header. `setup.bat` creates a **Desktop shortcut** and asks whether to **pin to the taskbar** and add a **Start menu / Quick Launch** entry. `Launch_RMT_GUI.bat` gets an icon'd twin, `MarginIQ.lnk`. |
+| Project-agnostic | **Project** dropdown on Tab 1 and `--project NVL\|WCL` on the CLI, driven by `projects.json` (name, code, START_RMT header aliases, axis file). Add a project without code changes. WCL-style `RxVref` headers and per-byte `Mc0.C0.B0.R0` rows are parsed. |
+| Workflow | **↺ Analyze Another Log** replaces the disabled *Next* button on Tab 3 after a successful run; also *File ▸ New Analysis* (`Ctrl+N`). It resets Tab 1 to the launch state (*Boot / MRC logs* source, empty file list, default stage/profile, locked tabs, default axis values). Project, JMP path and PPT template are kept. |
+| Tab 2 layout | Grouped toolbar: **Axis Values** (apply / recalculate), **Axis Presets** (Save JSON, Load JSON, Load .jrp) and **JMP Graph Builder** (opens a live, editable Graph Builder with the current axis values). |
+| Default ±Ref | Configurable **+ Ref / − Ref** in the Tab 2 *Defaults*, saved as `defaults.ref_line_plus/minus`. Used whenever a parameter's own Ref is empty: JMP ref lines (now also on DTR charts), PASS/WARN/FAIL status and red raw-data cells. *Apply ±Ref to all* copies it to every charted parameter. |
+| HTML report | New **Mode Registers** and **ODT** tabs; the **JMP Charts** tab is now a dropdown-driven side-by-side comparison workspace. See [HTML report](#-html-report). |
+| Tab 3 | *Open HTML Report* button. |
 
 ---
 
-## 🔧 Common Tasks
+## 🚀 Quick start
 
-### Extract data to CSV only
 ```powershell
-python "rmt_pipeline_runner.py"
-# Select Stage 1
+git clone https://github.com/kumarss-intel/RMT-Margin-Analysis-Tool.git
+cd RMT-Margin-Analysis-Tool
+.\setup.bat          # once: .venv + dependencies + MarginIQ desktop icon
 ```
 
-### Generate Excel with pivot tables
-```powershell
-python "rmt_pipeline_runner.py"
-# Select Stage 2
-```
+Then do **one** of the following:
 
-### Generate JMP scatter charts only (no PPT)
-```powershell
-python "rmt_pipeline_runner.py"
-# Select Stage 3
-```
-
-### Full analysis — JMP charts + PPT (default)
-```powershell
-python "rmt_pipeline_runner.py"
-# Press Enter at the stage prompt (default is 4)
-```
-
-### Customise JMP chart axis scales
-Edit `jmp_axis_settings.json` in this folder, then re-run Stage 3 or 4.
-Each parameter has `plus`/`minus` blocks with `min`, `max`, `inc`, and `ref_line` values.
+- **GUI:** double-click the **MarginIQ** desktop icon. On Tab 1 pick the *Project*, add your logs and click *Generate CSV & Continue*. Tune the axes on Tab 2, click *Run Pipeline* on Tab 3, then *↺ Analyze Another Log* for the next set.
+- **Agentic:** open the folder in VS Code, switch Copilot Chat to **Agent** and ask *"Plot the RMT margins for the NVL logs in C:\path\to\logs"*.
+- **CLI:** run the pipeline directly:
+  ```powershell
+  .venv\Scripts\python.exe rmt_log_pipeline.py --project NVL --input "C:\path\to\logs" --pattern "*.log" --outdir "C:\path\to\out" --no-ask-chart-approval
+  ```
 
 ---
 
-## 📊 Output Structure
-
-After running the pipeline, your output folder will contain:
-
-```
-output_dir/
-├── RMT_Combined_Similar.csv          # Standard format (like your reference)
-├── RMT_Combined_Extended.csv         # Standard + metadata columns
-├── csv_by_file/
-│   ├── file1_RMT.csv
-│   ├── file2_RMT.csv
-│   └── ...
-├── RMT_Extraction.xlsx               # Multi-sheet Excel workbook
-│   ├── All_RMT (combined)
-│   ├── Freq_5600, Freq_6400, ... (by frequency)
-│   └── File_log1, File_log2, ... (by source file)
-├── RMT_Summary_JMP_Charts.pptx       # PPT built from JMP PNG exports (Stage 4)
-└── jmp_charts/
-    ├── RecEnDelay.png                 # Per-parameter: X=Params, Y=±values
-    ├── TxDqsDelay.png
-    ├── RxDqsDelay.png
-    ├── TxDqDelay.png
-    ├── RxDqVrefByte.png
-    ├── TxVref.png
-    ├── ClkGrpPi.png
-    ├── CmdVref.png
-    └── RMT_Dashboard.png             # All parameters combined
-```
-
----
-
-## 🔧 Installation & Setup
+## 🔧 Installation & setup
 
 ### Prerequisites
 
-- Windows
-- Python 3.10+ (3.14 recommended) installed with the **tcl/tk and IDLE** option, so `tkinter` is available for the GUI
-- Optional: SAS JMP Pro (licensed Windows install) for the JMP chart and PPT stages
+- Windows 10 or 11
+- Python 3.10+ (3.14 recommended), installed with the **tcl/tk and IDLE** option so `tkinter` is available for the GUI
+- Optional: SAS JMP Pro (licensed Windows install) for JMP charts, the JMP PPT and Graph Builder
+- Optional (agentic mode): VS Code with GitHub Copilot Chat
 - Access to this private repository (ask the owner to add you as a collaborator)
 
 ### Get the code
@@ -166,42 +94,82 @@ If the clone fails with `Unsupported proxy syntax in 'proxy-server:port'`, see
 
 ### One-time setup
 
-From this folder, double-click `setup.bat` or run:
+From this folder, double-click `setup.bat` or run `.\setup.bat`. It performs six steps:
+
+1. Locates a Python 3.10+ interpreter (prefers `C:\Program Files\Python314`, then the `py` launcher, then `PATH`).
+2. Creates the local virtual environment `.venv`.
+3. Checks the proxy settings pip will use (stopping with a clear message if one is malformed), then installs the pinned [requirements.txt](requirements.txt) (`openpyxl`, `python-pptx`, `pillow`).
+4. Verifies every package imports correctly.
+5. Detects the existing JMP installation and reports its path. It warns, but does not fail, when JMP is absent.
+6. **Creates the MarginIQ shortcuts** (see below).
+
+| Option | Effect |
+|--------|--------|
+| `setup.bat` | Normal install. Creates the Desktop shortcut and **asks** about the taskbar pin and the Start menu / Quick Launch entry. |
+| `setup.bat --recreate` | Deletes `.venv` and rebuilds it from scratch. |
+| `setup.bat --proxy http://proxy-chain.intel.com:912` | Uses this proxy for pip, for this run only. |
+| `setup.bat --all-shortcuts` | Creates the Desktop, Start menu and Quick Launch shortcuts plus the taskbar pin, without asking. |
+| `setup.bat --no-prompt` | Desktop shortcut only, never asks (unattended or agent runs). |
+| `setup.bat --no-shortcuts` | Creates no shortcuts. |
+| `setup.bat --help` | Shows all options. |
+
+### Desktop, taskbar and Start menu shortcuts
+
+Every shortcut shows the **MarginIQ icon** and starts the GUI exactly like `Launch_RMT_GUI.bat`:
+the `.venv` `pythonw.exe` runs `rmt_gui.py` with no console window.
+
+| Shortcut | Created | Location |
+|----------|---------|----------|
+| **Desktop** | Always (unless `--no-shortcuts`) | `<Desktop>\MarginIQ.lnk` |
+| **Launcher twin** | Always, and on the first run of `Launch_RMT_GUI.bat` | `<tool folder>\MarginIQ.lnk`, next to `Launch_RMT_GUI.bat` |
+| **Taskbar** | Asked: *"Pin MarginIQ to the taskbar [Y,N]?"* | Pinned taskbar icon |
+| **Start menu + Quick Launch** | Asked: *"Add MarginIQ to the Start menu and Quick Launch toolbar [Y,N]?"* | *Start ▸ All apps ▸ MarginIQ* and `%APPDATA%\Microsoft\Internet Explorer\Quick Launch` |
+
+Each prompt defaults to **No** after 30 seconds, so setup never hangs.
+
+> **Why the taskbar needs one click from you.** Since Windows 10 (1809), Windows blocks
+> programs from pinning themselves to the taskbar. When you answer **Y**, setup creates the
+> Start-menu shortcut, tries to pin, and if Windows refuses it opens Explorer on the shortcut
+> and prints the steps. Right-click **MarginIQ** ▸ *Pin to taskbar* (Windows 11: *Show more
+> options* ▸ *Pin to taskbar*). Alternatively, start MarginIQ and right-click its taskbar
+> button ▸ *Pin to taskbar*.
+>
+> The GUI and its shortcuts share the AppUserModelID `Intel.CCG.CVE.MarginIQ`, so the running
+> window always shows the MarginIQ icon and groups under the pinned button.
+
+> **Why `Launch_RMT_GUI.bat` itself shows the generic batch icon.** Windows cannot attach an
+> icon to a `.bat` file. The icon'd `MarginIQ.lnk` next to it is the same launcher; copy or pin
+> that shortcut instead.
+
+> **Quick Launch toolbar.** Windows 10 shows it only when you enable it (*taskbar ▸ Toolbars ▸
+> New toolbar ▸* `%APPDATA%\Microsoft\Internet Explorer\Quick Launch`). Windows 11 has no Quick
+> Launch toolbar, so use the Start menu entry or the taskbar pin there.
+
+Manage the shortcuts at any time without re-running setup:
 
 ```powershell
-.\setup.bat
+# create / refresh (any combination of -Desktop -Local -StartMenu -QuickLaunch -Taskbar)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create_shortcuts.ps1 -Desktop -StartMenu -Taskbar
+
+# remove every MarginIQ shortcut
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create_shortcuts.ps1 -Remove
 ```
 
-`setup.bat` will:
-
-1. Locate a Python 3.10+ interpreter (prefers `C:\Program Files\Python314`, then the `py` launcher, then `PATH`)
-2. Create the local virtual environment `.venv`
-3. Check the proxy settings pip will use and stop with a clear message if one is malformed (see [Setup fails with a proxy error](#setup-fails-with-a-proxy-error))
-4. Install the pinned dependencies from [requirements.txt](requirements.txt) (`openpyxl`, `python-pptx`, `pillow`)
-5. Verify every package imports correctly
-6. Detect the existing JMP installation and report its path (warns, but does not fail, when JMP is absent)
-
-To rebuild the environment from scratch:
-
-```powershell
-.\setup.bat --recreate
-```
-
-Behind the Intel network, pass a proxy for the install (this run only):
-
-```powershell
-.\setup.bat --proxy http://proxy-chain.intel.com:912
-```
+The icon is generated by [`scripts/make_icon.py`](scripts/make_icon.py): a DDR eye diagram
+with a cyan margin arrow on an Intel-blue tile, at 16–256 px. The generated
+`assets\marginiq.ico` / `marginiq.png` are committed; re-run the script only if you change the
+design.
 
 ### Running the tool
 
 | How | Command |
 |-----|---------|
-| GUI | Double-click `Launch_RMT_GUI.bat` (uses `.venv` automatically) |
-| Interactive CLI | `.venv\Scripts\python.exe rmt_pipeline_runner.py` |
-| Raw pipeline CLI | `.venv\Scripts\python.exe rmt_log_pipeline.py --help` |
+| GUI | **MarginIQ** desktop / Start / taskbar icon, `MarginIQ.lnk`, or `Launch_RMT_GUI.bat` |
+| Agentic | VS Code ▸ Copilot Chat ▸ **Agent** mode — see [Agentic mode](#-agentic-mode-github-copilot) |
+| Pipeline CLI | `.venv\Scripts\python.exe rmt_log_pipeline.py --help` |
+| Interactive CLI menu | `.venv\Scripts\python.exe rmt_pipeline_runner.py` |
 
-Prefer working in an activated shell? Run `.venv\Scripts\activate.bat`, then plain `python` commands resolve to the virtual environment.
+Prefer an activated shell? Run `.venv\Scripts\activate.bat`; plain `python` then resolves to the virtual environment.
 
 ### About JMP (excluded from the virtual environment)
 
@@ -209,57 +177,282 @@ JMP Pro is licensed desktop software and can never be installed by pip. Setup on
 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\jmp.exe` registry entry, the standard
 `C:\Program Files\SAS\JMPPRO\<version>` folders, and `PATH`.
 
+Without JMP, log parsing, CSV, Excel, the HTML report and the native PPT all still work, and
+`--jmp-jsl-only` produces the JSL script to run later on a JMP-equipped machine.
+
+---
+
+## 🖥️ Using the GUI
+
+The window has a **File** menu (*New Analysis* `Ctrl+N`, *Open Output Folder*, *Exit*), a **Help**
+menu (*User Guide*, *Open Debug Log Folder*, *About MarginIQ*), and three tabs driven by the
+*Previous / Next* bar.
+
+### Tab 1 · Input & Workflow
+
+| Section | What to do |
+|---------|------------|
+| **Project & Experiment Profile** | **Project** (Nova Lake, Wildcat Lake, …) labels the reports and selects that platform's START_RMT header aliases. **Profile**: *Non-Thermal* or *Thermal Experiment (DTR)* for BCRH / BHRC logs (adds `--dtr`). |
+| **Data Source** | *Boot / MRC logs* (default), *Existing CSV*, *Existing Excel* or *PNG charts → PPT only*. |
+| **Files / Folder** | *Add Files…* / *Add Folder…* (filtered by *File Mask*, e.g. `*.log;*.txt`). |
+| **Multiple-File Handling** | *Concatenate* into one report (overlay by source) or process each file *Separately* (one subfolder each). |
+| **Output**, **PPT Template**, **Workflow Stage**, **Tools & Options** | Output folder (auto-filled), file names, optional `.pptx` template, stage 1–4, JMP executable, JSL-only. |
+
+**Generate CSV & Continue →** runs Stage 1 and unlocks Tabs 2–3, which then reuse that CSV.
+
+### Tab 2 · Parameters & Axis
+
+| Group | Controls |
+|-------|----------|
+| **Axis Values** | *Apply axis settings*; **↻ Recalculate from data** (Min / Max / Inc from the logs; ±Ref preserved). |
+| **Axis Presets** | **Save JSON…**, **Load JSON…**, **Load .jrp…** (clone scales from a JMP report). |
+| **JMP Graph Builder (interactive)** | Choose *All charted parameters* or one parameter, then **▶ Open**. JMP opens live Graph Builder windows using the current axis values. Fine-tune them, save as `.jrp` in JMP, and bring the scales back with *Load .jrp…*. |
+| **Defaults** | Inc, minor ticks, grids, **+ Ref / − Ref** (default ±10), *Apply ±Ref to all*, ref-line colours. |
+| **Per-Parameter Y-Axis** | *Chart* checkbox, +/− Min / Max / Inc / Ref per parameter, and a live eye-preview. An empty Ref uses the default ±Ref. |
+
+### Tab 3 · Preview & Run
+
+An editable command preview (what you see is what runs), **▶ Run Pipeline**, **■ Stop**,
+*Open Output Folder*, *Open HTML Report* and a live output log. After a successful run the
+bottom-right button becomes **↺ Analyze Another Log**. It clears the session back to the
+launch state, so the next log set starts on Tab 1 with *Boot / MRC logs* selected.
+
+Every GUI action is logged in detail to `logs\rmt_gui_debug_<timestamp>.log`
+(*Help ▸ Open Debug Log Folder*). Attach it when reporting a problem.
+
+---
+
+## 🤖 Agentic mode (GitHub Copilot)
+
+MarginIQ ships a Copilot **agent skill**,
+[`.github/skills/rmt-margin-plots/SKILL.md`](.github/skills/rmt-margin-plots/SKILL.md), plus
+repository instructions,
+[`.github/copilot-instructions.md`](.github/copilot-instructions.md). Together they let
+Copilot run the full pipeline from a chat request. The skill is self-contained: every path is
+resolved from `git rev-parse --show-toplevel`, so it works from any clone location.
+
+### Set up
+
+1. Clone the repository and run `setup.bat` once. The agent needs `.venv`; if it is missing,
+   the agent runs `setup.bat --no-prompt` itself.
+2. Open the **repository folder** in VS Code (the skill is discovered from `.github/skills`).
+3. In Copilot Chat, select **Agent** mode.
+
+### Ask in plain language
+
+| You ask | The agent runs |
+|---------|----------------|
+| *"Plot RMT margins for the NVL logs in C:\lab\NVL\run1"* | Base pipeline with `--project NVL`: CSV, Excel, HTML (MR / ODT tabs) and PPT |
+| *"Generate JMP charts for RxDqVrefByte and TxVref from C:\lab\logs into C:\lab\out"* | `--generate-jmp-charts --jmp-exe <detected> --chart-fields RxDqVrefByte,TxVref` |
+| *"Build the thermal (BCRH/BHRC) report for C:\lab\NVL\DTR\...\test"* | `--dtr`; the agent confirms the profile first |
+| *"Analyze these Wildcat Lake logs"* | `--project WCL` (handles `RxVref` and per-byte rows) |
+| *"What RTT_WR / RTT_PARK did training pick for these logs?"* | Base run, then reads the **ODT** / **Mode Registers** tabs or `rmt_metadata.json` |
+| *"Re-chart the existing CSV with ±12 reference lines"* | Copies `jmp_axis_settings.json` into the output folder, sets `ref_line_plus/minus` to ±12, then runs `--jmp-from-csv ... --jmp-axis-config <copy>` |
+| *"Rebuild the PPT from the charts in C:\lab\out\jmp_charts"* | `--ppt-from-charts` |
+
+### How the agent works
+
+1. **Confirms inputs.** It asks for anything missing (input folder, output folder, project,
+   JMP yes/no, parameters) and never invents paths. It infers the project only when the path
+   or log is unambiguous (e.g. `\NVL\`, `Detected board: WCL …`).
+2. **Resolves the tool.** Repository root, `.venv\Scripts\python.exe`, and JMP from the
+   registry or standard folders. Without JMP it falls back to base mode (CSV, Excel, HTML, PPT).
+3. **Sanity-checks the logs.** It looks for `START_RMT` before starting a long run.
+4. **Runs `rmt_log_pipeline.py` non-interactively.** Always with `--no-ask-chart-approval` and
+   a long wait, because JMP runs take 3–5 minutes.
+5. **Reports.** It lists every artifact with its full path and flags anything skipped. It reads
+   the exit code: `0` success, `1` no files, `2` bad path / unknown project / no RMT blocks,
+   `3` approval denied, `4` JMP requested without `--jmp-exe`, `5` JMP failed.
+
+### Guardrails built into the skill
+
+- Never starts `rmt_gui.py`, `Launch_RMT_GUI.bat` or `rmt_pipeline_runner.py` (interactive, would hang).
+- Never uses bare `python` or a hard-coded, user-specific path.
+- Never runs a JMP job without your approval of the chart parameters (asked in chat).
+- Runs `setup.bat --no-prompt` (no shortcut questions) if the environment is missing.
+
+### Agentic tips
+
+- Mention **DTR / thermal / BCRH / BHRC** for temperature-drift logs, and the **project** name.
+- Ask follow-ups on the results, for example *"which rank has the worst TxVref margin?"* or
+  *"compare MR34 between 4800 and 5200"*. The agent can read the generated CSV and
+  `rmt_metadata.json`.
+- For a one-off ±Ref or axis change, ask for it explicitly. The agent edits a **copy** in the
+  output folder, never the shipped `jmp_axis_settings.json`.
+- To teach the agent about a new platform, add it to `projects.json`. No skill change is needed.
+
+---
+
+## ⌨️ Command line
+
 ```powershell
-# Verify JMP installation manually
-Test-Path "C:\Program Files\SAS\JMPPRO\17\jmp.exe"
+.venv\Scripts\python.exe rmt_log_pipeline.py `
+  --project NVL `
+  --input "C:\path\to\logs" `
+  --pattern "*.log" `
+  --outdir "C:\path\to\out" `
+  --no-ask-chart-approval `
+  --generate-jmp-charts `
+  --jmp-exe "C:\Program Files\SAS\JMPPRO\17\jmp.exe" `
+  --jmp-axis-config ".\jmp_axis_settings.json"
 ```
 
-Without JMP, log parsing, CSV, Excel and the HTML report all still work, and `--jmp-jsl-only` produces the JSL script to run later on a JMP-equipped machine.
+| Key flags | Purpose |
+|-----------|---------|
+| `--project NVL\|WCL\|"Wildcat Lake"` | Platform from `projects.json` (default: registry default, `NVL`) |
+| `--dtr` | Thermal Experiment (BCRH / BHRC) parsing: Boot-temp and Run-temp RMT per log |
+| `--chart-fields a,b,c` | Parameters to chart (omit for all) |
+| `--generate-jmp-charts --jmp-exe <exe>` | JMP PNG charts and the JMP PPT |
+| `--jmp-from-csv <csv…>` / `--jmp-from-excel <xlsx>` / `--ppt-from-charts <dir>` | Reuse existing artifacts |
+| `--jmp-jsl-only` | Write the JSL without launching JMP |
+| `--version` | Print the MarginIQ version |
+
+Full reference: [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md). Beginner walkthrough:
+[RMT_QUICKSTART.md](RMT_QUICKSTART.md).
+
+### Workflow stages
+
+| Stage | Output | Approx. time |
+|-------|--------|--------------|
+| **1** | CSV | ~30 s |
+| **2** | CSV + Excel | 1–2 min |
+| **3** | CSV + Excel + JMP charts | 3–5 min |
+| **4** *(default)* | CSV + Excel + JMP charts + PPT | 3–5 min |
+
+The HTML report and the native PPT are written in every stage that parses logs.
 
 ---
 
-## 📖 Documentation Files
+## 📊 HTML report
 
-| File | Purpose | Audience |
-|------|---------|----------|
-| [README.md](README.md) | This index (you are here) | Everyone |
-| [setup.bat](setup.bat) | One-time environment setup (`.venv` + dependencies) | Everyone |
-| [scripts/check_proxy.py](scripts/check_proxy.py) | Proxy pre-flight check run by `setup.bat` | Troubleshooting |
-| [requirements.txt](requirements.txt) | Pinned Python dependencies | Everyone |
-| [RMT_QUICKSTART.md](RMT_QUICKSTART.md) | 5-minute beginner guide | New users |
-| [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md) | Complete reference manual | Advanced users |
-| [jmp_axis_settings.json](jmp_axis_settings.json) | JMP chart axis customisation | Stage 4 users |
-| [.github/skills/rmt-margin-plots/SKILL.md](.github/skills/rmt-margin-plots/SKILL.md) | Copilot agent skill (agentic use) | Copilot users |
+`RMT_Report.html` is a single self-contained file. Share it by e-mail or on a Teams / SharePoint site.
+
+| Tab | Content |
+|-----|---------|
+| Overview | KPI cards, margin degradation below ±Ref, window-width chart, statistics (Cpk, guardband), interactive multi-source dashboard |
+| Frequency / Parameters / RunTemp | Per-frequency, per-rank and temperature-drift charts |
+| Training Steps / Platform | MRC task timeline; board, CPU and DIMM (SPD) details |
+| **Mode Registers** | Final per-rank DDR5 MR values (from *SAGV Finalization*), JEDEC decodes (CL, Ron, VrefDQ/CA/CS, RTT_*, ODTL), amber = changed by training vs the JEDEC-reset value, bold = differs between ranks, filters, and a **cross-log MR diff** |
+| **ODT** | DIMM ODT summary (RonUp/Dn, **RTT_WR**, NomWr, NomRd, Park, ParkDqs, CA/CS groups), CPU read ODT, per-rank ODT decoded from MR32–36, ODT latency offsets, BIOS ODT inputs, and a **cross-log ODT matrix** |
+| **JMP Charts** | Comparison workspace. Every panel has a chart dropdown; set 1–3 panels per row, add or remove panels, reset. Pre-filled with every chart, so it is never blank. |
+| Raw Data | Filterable table; cells weaker than ±Ref are highlighted red |
 
 ---
 
-## ❓ Frequently Asked Questions
+## ⚙️ Configuration
 
-### Q: Which tool should I use?
-**A:** Use `rmt_pipeline_runner.py` for your first run. It's interactive and guides you through selections. For scripting/automation, use `rmt_log_pipeline.py` directly.
+### Projects — [`projects.json`](projects.json)
 
-### Q: How do I extract specific fields for charts?
-**A:** When prompted, enter field names or numbers:
-- By number: `1,2,3` → RecEnDelay, TxDqsDelay, RxDqsDelay
-- By name: `RxDqVrefByte,TxVref` → Those fields only
-- All: type `all`
-- None: type `none`
+```json
+"WCL": { "name": "Wildcat Lake", "code": "WCL", "memory": "DDR5",
+         "param_aliases": { "RxVref": "RxDqVrefByte" },
+         "axis_config": "jmp_axis_settings.json" }
+```
 
-### Q: Can I generate charts without PowerPoint?
-**A:** Yes! Use Stage 4 (JMP) which generates PNG images directly from the data.
+Add an entry to support a new platform. It appears in the GUI dropdown and is accepted by
+`--project`. `param_aliases` maps a log's START_RMT header name to MarginIQ's canonical
+parameter name.
 
-### Q: What if I deny chart approval?
-**A:** The script exits cleanly with exit code 3. CSV and Excel still generate fine. No PPT will be created.
+### Axis settings and default ±Ref — [`jmp_axis_settings.json`](jmp_axis_settings.json)
 
-### Q: How do I run this in batch/automated mode?
-**A:** Use `rmt_log_pipeline.py` with `--no-ask-chart-approval` and `--chart-fields` specified. See [Advanced Usage](RMT_LOG_PIPELINE_README.md#advanced-usage-direct-script-commands).
+`defaults` holds `inc`, `minor_ticks`, grids, ref-line colours and **`ref_line_plus` /
+`ref_line_minus`** (the default ±Ref, ±10). Each parameter has `plus` / `minus` blocks with
+`min`, `max`, `inc` and `ref_line`. A missing `ref_line` falls back to the default ±Ref for JMP
+ref lines, PASS/WARN/FAIL and raw-data highlighting. Edit the file in Tab 2 or by hand; no
+code change is needed.
 
-### Q: Where are my output files?
-**A:** In the folder you specified with `--outdir` or the output path you entered in the prompts. See [Output Structure](#output-structure) above.
+### Branding / version — [`rmt_project.py`](rmt_project.py)
+
+`TOOL_NAME`, `TOOL_SUBTITLE` and `TOOL_VERSION` are defined once and used by the GUI, CLI,
+HTML and PPT.
+
+---
+
+## 📁 Output structure
+
+```
+output_dir/
+├── RMT_Combined_Similar.csv        # standard columns
+├── RMT_Combined_Extended.csv       # + SourceFile / Frequency / Gear / BlockIndex
+├── csv_by_file/<log>_RMT.csv       # one CSV per source log
+├── RMT_Extraction.xlsx             # All_RMT + per-file + per-frequency sheets
+├── RMT_Report.html                 # interactive report (MR / ODT / JMP comparison tabs)
+├── RMT_Summary.pptx                # native PowerPoint summary
+├── rmt_metadata.json               # training steps, platform, MR / ODT data (reused by --jmp-from-csv)
+├── rmt_jmp_charts.jsl              # JMP script (JMP stages)
+├── rmt_graph_builder.jsl           # interactive Graph Builder script (GUI Tab 2)
+├── RMT_Summary_JMP_Charts.pptx     # deck built from the JMP PNGs
+└── jmp_charts/<Parameter>.png      # one Graph Builder chart per parameter
+```
+
+---
+
+## 📝 Column reference
+
+| Column | Meaning |
+|--------|---------|
+| `SourceFile`, `Frequency`, `Gear`, `BlockIndex` | Extended format only: source log, MT/s, gear, START_RMT block number |
+| `Params` | Rank (`Mc0.C0.R0`) or byte-rank (`Mc0.C0.B0.R0`, WCL) |
+| `BootTemp`, `RunTemp` | DTR temperatures snapped to 0 / 90 °C (empty for non-thermal) |
+| `<Param>-`, `<Param>+` | Negative / positive margin for RecEnDelay, TxDqsDelay, RxDqsDelay, TxDqDelay, RxDqVrefByte, TxVref, ClkGrpPi, CmdVref |
+
+---
+
+## 📖 Documentation files
+
+| File | Purpose |
+|------|---------|
+| [README.md](README.md) | This user guide |
+| [RMT_QUICKSTART.md](RMT_QUICKSTART.md) | 5-minute beginner guide (GUI, agent, CLI) |
+| [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md) | Complete CLI reference manual |
+| [.github/skills/rmt-margin-plots/SKILL.md](.github/skills/rmt-margin-plots/SKILL.md) | Copilot agent skill (agentic mode) |
+| [.github/copilot-instructions.md](.github/copilot-instructions.md) | Repository rules for Copilot |
+| [setup.bat](setup.bat) | Environment setup and shortcuts |
+| [scripts/create_shortcuts.ps1](scripts/create_shortcuts.ps1) | Create / remove the MarginIQ Desktop / Start / Quick Launch / taskbar shortcuts |
+| [scripts/make_icon.py](scripts/make_icon.py) | Regenerates `assets/marginiq.ico` / `.png` |
+| [scripts/check_proxy.py](scripts/check_proxy.py) | Proxy pre-flight check run by `setup.bat` |
+| [projects.json](projects.json) | Project registry |
+| [jmp_axis_settings.json](jmp_axis_settings.json) | Axis scales and default ±Ref |
+| [requirements.txt](requirements.txt) | Pinned Python dependencies |
+
+---
+
+## ❓ Frequently asked questions
+
+**Which mode should I use?** The GUI for everyday analysis. Agentic mode when you just want
+the outputs from a chat request. The CLI for automation.
+
+**How do I analyze a second batch of logs in the GUI?** After *Run Pipeline* finishes, click
+**↺ Analyze Another Log** (or press `Ctrl+N`). Tab 1 returns to *Boot / MRC logs* with an
+empty file list.
+
+**My platform is not in the Project list.** Add it to `projects.json` and restart the GUI.
+
+**Where are the Mode Register and RTT_WR values?** In the **Mode Registers** and **ODT** tabs
+of `RMT_Report.html`, and in `rmt_metadata.json` under `platform_infos[*].mr_odt`.
+
+**The JMP Charts tab is missing.** It appears only when JMP produced PNGs (Stage 3/4 or
+`--jmp-from-csv` without `--jmp-jsl-only`).
+
+**Can I generate charts without PowerPoint?** Yes. Stage 3 produces the PNGs; the HTML
+report embeds them.
+
+**What if I deny chart approval (interactive CLI)?** The script exits with code 3. The CSV
+and Excel are still written.
 
 ---
 
 ## 🐛 Troubleshooting
+
+### Shortcuts / icon
+
+| Symptom | Fix |
+|---------|-----|
+| No desktop icon after setup | Run `powershell -ExecutionPolicy Bypass -File scripts\create_shortcuts.ps1 -Desktop`. The Desktop may be redirected to OneDrive; the script uses the real location. |
+| Taskbar pin was not created | Expected on Windows 10 1809+ / 11. Right-click *Start ▸ All apps ▸ MarginIQ* ▸ *Pin to taskbar*. |
+| Taskbar shows a Python icon | Run setup again (or `create_shortcuts.ps1 -StartMenu`) so the shortcut carries the MarginIQ AppUserModelID, then re-pin. |
+| Shortcut does nothing | `.venv` is missing or broken. Run `setup.bat --recreate`. |
+| Old / blank icon | Windows icon cache. Sign out and back in, or run `ie4uinit.exe -show`. |
 
 ### Cloning behind a broken proxy
 
@@ -326,155 +519,37 @@ now prints the exact source. Fix it in either of these ways:
 For an environment variable, fix or delete it under Windows Settings >
 "Edit environment variables for your account", then open a new terminal.
 
-### Script won't start
-```powershell
-# Check Python is installed
-python --version
-
-# Verify script exists
-Test-Path "rmt_pipeline_runner.py"
-
-# Check file permissions
-Get-Acl "rmt_pipeline_runner.py"
-```
-
 ### No data extracted
-- ✅ Verify input files contain `START_RMT` text
-- ✅ Check for lines like `Mc0.C0.R0: -32.0 32.0 ...`
-- ✅ Ensure file extension is `.txt` (or adjust `--pattern`)
 
-### Missing CSV/Excel/PPT
+- Verify the input files contain `START_RMT` text and rows like `Mc0.C0.R0: -32.0 32.0 ...`.
+- Check `--pattern` / *File Mask* matches your extension (`*.log` vs `*.txt`).
+- For another platform, pick the right **Project**, or add its header aliases to `projects.json`.
+
+### Missing CSV / Excel / PPT
+
 ```powershell
-# Rebuild the environment with all required packages
 .\setup.bat --recreate
-
-# Verify installation
 .venv\Scripts\python.exe -c "import openpyxl, pptx; print('OK')"
 ```
 
-### Permission denied
-- Run PowerShell as Administrator
-- Check folder write permissions
-- Ensure input files are readable
-
 ### JMP charts not generating
+
 ```powershell
-# Check JMP is installed
 Test-Path "C:\Program Files\SAS\JMPPRO\17\jmp.exe"
-
-# Use JSL-only mode to test script generation
-python "rmt_log_pipeline.py" ... --jmp-jsl-only
+.venv\Scripts\python.exe rmt_log_pipeline.py ... --jmp-jsl-only   # inspect the JSL
 ```
 
-### Exit code 3 (chart approval denied)
-- This is intentional behavior when you deny chart approval
-- CSV and Excel still generate successfully
-- Re-run and approve if you need PPT charts
+MarginIQ closes any running JMP instance before a chart run (JMP is single-instance).
+Save your JMP work first.
+
+### Reporting a problem
+
+Attach the GUI debug log (*Help ▸ Open Debug Log Folder*), the command preview from Tab 3,
+and the output folder's `rmt_metadata.json`.
 
 ---
 
-## 🎓 Example Workflows
+## 📜 Version
 
-### Workflow 1: Quick Analysis (2 minutes)
-```powershell
-# Interactive mode
-python "rmt_pipeline_runner.py"
-# → Select Stage 2
-# → Enter paths
-# → Get CSV + Excel output
-```
-
-### Workflow 2: Automated Daily Extraction
-```powershell
-# Batch script - runs daily at 6 AM
-$timestamp = Get-Date -Format "yyyyMMdd_HHmm"
-python "rmt_log_pipeline.py" `
-  --input "E:\logs\daily_run" `
-  --pattern "*.txt" `
-  --outdir "E:\rmt_results\$timestamp" `
-  --no-ask-chart-approval `
-  "--chart-fields="
-```
-
-### Workflow 3: Full Presentation Report
-```powershell
-# Interactive: select Stage 3
-python "rmt_pipeline_runner.py"
-# → Choose Stage 3
-# → Approve specific fields when prompted
-# → Get PowerPoint with your selected charts
-```
-
-### Workflow 4: Complete Analysis with JMP
-```powershell
-# Direct script with all outputs
-python "rmt_log_pipeline.py" `
-  --input "C:\path\to\logs" `
-  --pattern "*.txt" `
-  --outdir "c:\rmt_analysis" `
-  --no-ask-chart-approval `
-  --chart-fields "RxDqVrefByte,TxVref,ClkGrpPi" `
-  --generate-jmp-charts `
-  --jmp-exe "C:\Program Files\SAS\JMPPRO\17\jmp.exe"
-```
-
----
-
-## 📝 Column Reference
-
-### CSV Output Columns (Standard Format)
-- `Params` - Rank identifier (e.g., Mc0.C0.R0)
-- `BootTemp`, `RunTemp` - Temperature readings
-- `RecEnDelay-`, `RecEnDelay+` - Timing window
-- `TxDqsDelay-`, `TxDqsDelay+` - Timing window
-- `RxDqsDelay-`, `RxDqsDelay+` - Timing window
-- `TxDqDelay-`, `TxDqDelay+` - Timing window
-- `RxDqVrefByte-`, `RxDqVrefByte+` - Voltage window
-- `TxVref-`, `TxVref+` - Voltage window
-- `ClkGrpPi-`, `ClkGrpPi+` - Clock timing
-- `CmdVref-`, `CmdVref+` - Command voltage
-
-### CSV Output Columns (Extended Format - adds)
-- `SourceFile` - Input filename
-- `Frequency` - Memory frequency (e.g., 5600, 6400)
-- `Gear` - Gear ratio (e.g., G2, G1)
-- `BlockIndex` - START_RMT block number in file
-
----
-
-## 🤖 Agentic Use (GitHub Copilot)
-
-The repository ships its own Copilot agent skill in
-[.github/skills/rmt-margin-plots/SKILL.md](.github/skills/rmt-margin-plots/SKILL.md).
-It is self-contained: every path it uses is resolved relative to this repository,
-so it works from any clone location.
-
-1. Clone the repository and run `setup.bat` once.
-2. Open the repository folder in VS Code with GitHub Copilot Chat in **Agent** mode.
-3. Ask, for example:
-   - *"Plot RMT margins for the logs in C:\path\to\logs"*
-   - *"Generate RMT JMP charts for RxDqVrefByte and TxVref from C:\path\to\logs into C:\path\to\output"*
-   - *"Build the RMT report for these thermal (BCRH) logs"*
-
-The agent runs `rmt_log_pipeline.py` non-interactively with the `.venv` interpreter,
-detects JMP Pro when it is installed (falling back to CSV + Excel + HTML + PPT when it
-is not), and reports the generated artifacts. It never launches the GUI or the
-interactive runner.
-
----
-
-## 📞 Support
-
-- **Script Issues:** Check [RMT_QUICKSTART.md](RMT_QUICKSTART.md#troubleshooting) Troubleshooting section
-- **Usage Questions:** See [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md#troubleshooting)
-- **Advanced Options:** Run `python rmt_log_pipeline.py --help`
-
----
-
-## 📜 License & Notes
-
-This tool is part of the Intel Memory Reference Code (MRC) development environment.
-
-**Version:** 1.0  
-**Last Updated:** 2026-06-23  
-**Tested on:** Python 3.14.4, Windows PowerShell 5.1+
+**MarginIQ 2.0.0** · Intel CCG CVE · Tested with Python 3.14, Windows 11 25H2, PowerShell 5.1,
+JMP Pro 17. Part of the Intel Memory Reference Code (MRC) validation environment.

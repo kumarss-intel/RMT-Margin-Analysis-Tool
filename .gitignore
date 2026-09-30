@@ -10,6 +10,11 @@ logs/
 
 # Generated analysis artifacts
 rmt_jmp_charts.jsl
+rmt_graph_builder.jsl
+RMT_GraphBuilder_Input.csv
 jmp_charts/
 *.xlsx
 *.pptx
+
+# Per-machine launcher shortcut created by setup.bat / Launch_RMT_GUI.bat
+MarginIQ.lnk

@@ -1,10 +1,10 @@
-# RMT Pipeline - Quick Start Guide
+# MarginIQ - Quick Start Guide
 
-📖 **See Also:** [Main README](README.md) · [Full Documentation](RMT_LOG_PIPELINE_README.md)
+*Intel CCG CVE DDR5 RMT Margin Analysis Tool*
 
-## For Beginners: Easiest Way to Get Started
+📖 **See Also:** [Main README](README.md) · [Agentic mode](README.md#-agentic-mode-github-copilot) · [Full CLI reference](RMT_LOG_PIPELINE_README.md)
 
-### Step 0: One-time environment setup
+## Step 0: One-time setup (everyone)
 
 Clone the repository (use `git clone` rather than Download ZIP, so `git pull` works later):
 
@@ -22,13 +22,51 @@ Then double-click **`setup.bat`** in the cloned folder, or run it from PowerShel
 .\setup.bat
 ```
 
-This creates the local `.venv` and installs all Python dependencies. You only do this once per machine.
+This creates the local `.venv`, installs all Python dependencies and puts a **MarginIQ** icon on
+your Desktop. It then asks two questions (each defaults to **N** after 30 s):
+
+```
+[6/6] Creating MarginIQ shortcuts...
+      The Desktop shortcut is always created. Optional extras:
+      Pin MarginIQ to the taskbar [Y,N]?
+      Add MarginIQ to the Start menu and Quick Launch toolbar [Y,N]?
+```
+
+Windows 10 (1809+) and 11 do not let programs pin themselves to the taskbar. If you answered
+**Y**, finish with one click: right-click *Start ▸ All apps ▸ MarginIQ* ▸ *Pin to taskbar*.
+Use `.\setup.bat --all-shortcuts` to say yes to everything, or `--no-shortcuts` to skip shortcuts.
+
+You only do this once per machine.
 Behind the Intel network, add a proxy: `.\setup.bat --proxy http://proxy-chain.intel.com:912`.
 If setup reports an `INVALID` proxy (e.g. `http://proxy-server:port`), see
 [Setup fails with a proxy error](README.md#setup-fails-with-a-proxy-error).
 JMP Pro is not installed by setup — it must already exist as a Windows application; setup just reports where it found it.
 
-> Prefer a GUI? Double-click **`Launch_RMT_GUI.bat`** after setup and skip the rest of this guide.
+## Option A: GUI (recommended)
+
+1. Double-click the **MarginIQ** desktop icon (or `Launch_RMT_GUI.bat` / `MarginIQ.lnk` in the tool folder).
+2. **Tab 1 · Input & Workflow:** choose the **Project** (e.g. *Nova Lake (NVL)*) and the
+   **Profile** (*Thermal Experiment (DTR)* for BCRH / BHRC logs). *Add Folder…* your logs, then
+   click **Generate CSV & Continue →**.
+3. **Tab 2 · Parameters & Axis:** tick the parameters, click **↻ Recalculate from data**, and
+   set the default **± Ref** (*Apply ±Ref to all*). Optionally click **▶ Open** under
+   *JMP Graph Builder* to tune the charts live in JMP.
+4. **Tab 3 · Preview & Run:** click **▶ Run Pipeline**, then **Open HTML Report**.
+5. Next batch? Click **↺ Analyze Another Log**. Tab 1 is reset to *Boot / MRC logs*.
+
+## Option B: Agentic (GitHub Copilot)
+
+1. Open the tool folder in VS Code and switch Copilot Chat to **Agent** mode.
+2. Ask, for example:
+   - *"Plot RMT margins for the NVL logs in C:\lab\NVL\run1 into C:\lab\NVL\run1\out"*
+   - *"Build the thermal DTR report with JMP charts for C:\lab\NVL\DTR\test"*
+   - *"Which RTT_WR and RTT_PARK did training choose in these logs?"*
+3. The agent asks for anything missing (paths, project, JMP yes/no), runs the pipeline and lists
+   the generated files. Details: [README › Agentic mode](README.md#-agentic-mode-github-copilot).
+
+## Option C: Interactive command-line menu
+
+The steps below use the text-menu wrapper (`rmt_pipeline_runner.py`).
 
 ### Step 1: Open PowerShell
 
@@ -100,7 +138,7 @@ Press **Enter** to save outputs alongside your input logs, or type a different p
 The script will start processing your files and show progress. When finished, check the output folder for:
 - ✅ CSV files (data tables)
 - ✅ Excel workbook (pivot-ready sheets)
-- ✅ JMP chart PNGs — one per parameter + dashboard (`jmp_charts/`) *if stage 3+*
+- ✅ JMP chart PNGs — one per parameter (`jmp_charts/`) *if stage 3+*
 - ✅ JMP script (`rmt_jmp_charts.jsl`) *if stage 3+*
 - ✅ PowerPoint from JMP charts (`RMT_Summary_JMP_Charts.pptx`) *if stage 4*
 
@@ -113,7 +151,7 @@ Use these if you want to run the same extraction repeatedly without prompts.
 ### Simplest (Just CSV + Excel):
 
 ```powershell
-python ".\rmt_log_pipeline.py" --input "C:\path\to\logs" --pattern "*.txt" --outdir "C:\path\to\output" --no-ask-chart-approval "--chart-fields="
+.venv\Scripts\python.exe ".\rmt_log_pipeline.py" --project NVL --input "C:\path\to\logs" --pattern "*.txt" --outdir "C:\path\to\output" --no-ask-chart-approval "--chart-fields="
 ```
 
 Replace `C:\path\to\logs` with your input folder.
@@ -137,7 +175,8 @@ python "rmt_pipeline_runner.py"
 Analyze all runs from a week:
 
 ```powershell
-python "rmt_log_pipeline.py" `
+.venv\Scripts\python.exe "rmt_log_pipeline.py" `
+  --project NVL `
   --input "c:\lab_Logs\Week47_Run1" "c:\lab_Logs\Week47_Run2" `
   --outdir "c:\results\week47_summary" `
   --no-ask-chart-approval `
@@ -151,7 +190,8 @@ Scheduled daily extraction with full charts:
 $outdir = "c:\reports\$(Get-Date -Format 'yyyy-MM-dd')"
 New-Item -ItemType Directory -Path $outdir -Force | Out-Null
 
-python "rmt_log_pipeline.py" `
+.venv\Scripts\python.exe "rmt_log_pipeline.py" `
+  --project NVL `
   --input "E:\validation_logs" `
   --pattern "rmt_*.txt" `
   --outdir $outdir `
@@ -170,7 +210,8 @@ Write-Host "Results saved to: $outdir"
 ### With PowerPoint (Stage 4 — JMP Charts + PPT):
 
 ```powershell
-python ".\rmt_log_pipeline.py" `
+.venv\Scripts\python.exe ".\rmt_log_pipeline.py" `
+  --project NVL `
   --input "C:\path\to\logs" `
   --pattern "*.txt" `
   --outdir "C:\path\to\output" `
@@ -182,7 +223,9 @@ python ".\rmt_log_pipeline.py" `
   --jmp-axis-config ".\jmp_axis_settings.json"
 ```
 
-> **Tip:** To change Y-axis scale, tick increments, or reference lines, edit `jmp_axis_settings.json` in the repository root — no code changes needed.
+> **Tip:** To change Y-axis scale, tick increments, or reference lines, edit `jmp_axis_settings.json` in the repository root (or use GUI Tab 2) — no code changes needed. `defaults.ref_line_plus` / `ref_line_minus` set the default ±Ref used for any parameter without its own `ref_line`.
+>
+> **Thermal (DTR) logs:** add `--dtr`. **Wildcat Lake:** use `--project WCL`. The HTML report always includes the **Mode Registers** and **ODT** tabs.
 
 ---
 

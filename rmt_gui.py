@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Intel CCG CVE DDR5 RMT Margin Analysis Tool - Novalake HX — Graphical Front-End
-==============================================
+MarginIQ — Intel CCG CVE DDR5 RMT Margin Analysis Tool — Graphical Front-End
+=========================================================================
 
 A neat, industry-standard desktop GUI layered **on top of** the existing
 command-line tools (``rmt_log_pipeline.py`` / ``rmt_pipeline_runner.py``).
@@ -46,6 +46,16 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from rmt_project import (
+    TOOL_NAME,
+    TOOL_SUBTITLE,
+    TOOL_VERSION,
+    get_project,
+    load_projects,
+    project_label,
+    project_param_aliases,
+)
+
 # ──────────────────────────────────────────────────────────────────────────
 # Configuration (kept in sync with rmt_pipeline_runner.py)
 # ──────────────────────────────────────────────────────────────────────────
@@ -69,6 +79,22 @@ def _resolve_python() -> str:
 
 PYTHON_EXE      = _resolve_python()
 PIPELINE_SCRIPT = str(HERE / "rmt_log_pipeline.py")
+APP_ICON_ICO    = HERE / "assets" / "marginiq.ico"
+APP_ICON_PNG    = HERE / "assets" / "marginiq.png"
+# Must match scripts/create_shortcuts.ps1 so the running window groups under
+# the pinned / Start-menu shortcut and shows the MarginIQ taskbar icon.
+APP_USER_MODEL_ID = "Intel.CCG.CVE.MarginIQ"
+
+
+def _set_app_user_model_id() -> None:
+    """Give the process its own taskbar identity (Windows only, best-effort)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except (AttributeError, OSError):
+        pass
 JMP_EXE         = r"C:/Program Files/SAS/JMPPRO/17/jmp.exe"
 # Optional default PPT template; set RMT_PPT_TEMPLATE to pre-fill the GUI field.
 PPT_TEMPLATE    = os.environ.get("RMT_PPT_TEMPLATE", "")
@@ -240,8 +266,21 @@ CLR_CARD    = "#ffffff"
 CLR_ACCENT  = "#059669"
 
 
-APP_TITLE = "Intel CCG CVE DDR5 RMT Margin Analysis Tool - Novalake HX"
-APP_SUBTITLE = "Client Computing Group  ·  Client Validation Engineering  ·  DDR5 Memory Training"
+APP_TITLE = TOOL_NAME
+APP_SUBTITLE = TOOL_SUBTITLE
+
+# Project registry (projects.json) — display label -> key for the dropdown.
+PROJECT_REGISTRY = load_projects()
+PROJECT_BY_LABEL = {project_label(k, PROJECT_REGISTRY): k for k in PROJECT_REGISTRY["projects"]}
+DEFAULT_PROJECT_LABEL = project_label(PROJECT_REGISTRY["default"], PROJECT_REGISTRY)
+
+# Launch-time defaults, re-applied by "Analyze Another Log".
+DEFAULT_PATTERN = "*.log;*.txt"
+DEFAULT_EXCEL   = "RMT_Extraction.xlsx"
+DEFAULT_PPT     = "RMT_Summary.pptx"
+DEFAULT_STAGE   = 4
+CSVINFO_LOCKED  = "Locked until Stage 1 CSV is generated from Tab 1."
+GRAPH_BUILDER_ALL = "All charted parameters"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -331,9 +370,15 @@ def _fmt(v) -> str:
 # ──────────────────────────────────────────────────────────────────────────
 class RmtGuiApp:
     def __init__(self) -> None:
+        _set_app_user_model_id()
         self.root = tk.Tk()
-        self.root.title(APP_TITLE)
-        self.root.geometry("1100x780")
+        self.root.title(f"{TOOL_NAME} {TOOL_VERSION} \u2014 {TOOL_SUBTITLE}")
+        if APP_ICON_ICO.exists():
+            try:
+                self.root.iconbitmap(default=str(APP_ICON_ICO))
+            except tk.TclError:
+                LOG.warning("Could not apply window icon %s", APP_ICON_ICO)
+        self.root.geometry("1100x800")
         self.root.minsize(960, 700)
         self.root.configure(bg=CLR_BG)
         # Route any exception raised inside a Tk callback (button command,
@@ -348,18 +393,20 @@ class RmtGuiApp:
         self._active_stage: int | None = None
         self._run_ok = True
         self._tabs_unlocked = False
+        self._analysis_done = False   # a full pipeline run finished -> offer "Analyze Another Log"
         self._stage1_csv: str | None = None
-        self.var_csvinfo = tk.StringVar(value="Locked until Stage 1 CSV is generated from Tab 1.")
+        self.var_csvinfo = tk.StringVar(value=CSVINFO_LOCKED)
 
         # state vars
+        self.var_project  = tk.StringVar(value=DEFAULT_PROJECT_LABEL)
         self.var_source   = tk.StringVar(value=SRC_LOGS)
         self.var_profile  = tk.StringVar(value=PROFILE_LABELS[PROFILE_NONTHERMAL])
-        self.var_pattern  = tk.StringVar(value="*.log;*.txt")
+        self.var_pattern  = tk.StringVar(value=DEFAULT_PATTERN)
         self.var_outdir   = tk.StringVar()
         self.var_outdir.trace_add("write", lambda *_: self._update_recalc_state())
-        self.var_excel    = tk.StringVar(value="RMT_Extraction.xlsx")
-        self.var_ppt      = tk.StringVar(value="RMT_Summary.pptx")
-        self.var_stage    = tk.IntVar(value=4)
+        self.var_excel    = tk.StringVar(value=DEFAULT_EXCEL)
+        self.var_ppt      = tk.StringVar(value=DEFAULT_PPT)
+        self.var_stage    = tk.IntVar(value=DEFAULT_STAGE)
         self.var_jmp      = tk.StringVar(value=JMP_EXE)
         self.var_tmpl     = tk.StringVar(value=PPT_TEMPLATE)
         self.var_jslonly  = tk.BooleanVar(value=False)
@@ -388,14 +435,21 @@ class RmtGuiApp:
             "minor_grid":   tk.StringVar(value="1"),
             "plus_color":   tk.StringVar(value="Medium Light Red"),
             "minus_color":  tk.StringVar(value="Blue"),
+            "ref_plus":     tk.StringVar(value="10"),
+            "ref_minus":    tk.StringVar(value="-10"),
         }
+        self.var_gb_param = tk.StringVar(value=GRAPH_BUILDER_ALL)
 
         self._build_style()
+        self._build_menu()
         self._build_header()
         self._build_footer()    # pack side=bottom FIRST so it always reserves space
         self._build_notebook()  # nav (side=bottom) then nb (expand fills middle)
 
         self._load_axis_json(Path(AXIS_CONFIG), silent=True)
+        for _k in ("ref_plus", "ref_minus"):
+            self.def_vars[_k].trace_add(
+                "write", lambda *_: self.root.after_idle(self._redraw_all_axis_previews))
         self._on_source_change()
         self._on_profile_change()
         self.root.after(150, self._drain_log)
@@ -438,6 +492,45 @@ class RmtGuiApp:
         st.configure("TRadiobutton", background=CLR_CARD, font=("Segoe UI", 10))
         st.configure("TEntry", padding=3)
 
+    # ── menu bar ─────────────────────────────────────────────────────────
+    def _build_menu(self) -> None:
+        mb = tk.Menu(self.root)
+        m_file = tk.Menu(mb, tearoff=False)
+        m_file.add_command(label="New Analysis", accelerator="Ctrl+N",
+                           command=self._new_analysis)
+        m_file.add_command(label="Open Output Folder", command=self._open_outdir)
+        m_file.add_separator()
+        m_file.add_command(label="Exit", command=self.root.destroy)
+        mb.add_cascade(label="File", menu=m_file)
+        m_help = tk.Menu(mb, tearoff=False)
+        m_help.add_command(label="User Guide (README)",
+                           command=lambda: self._open_path(HERE / "README.md"))
+        m_help.add_command(label="Open Debug Log Folder",
+                           command=lambda: self._open_path(LOG_DIR))
+        m_help.add_separator()
+        m_help.add_command(label=f"About {TOOL_NAME}", command=self._show_about)
+        mb.add_cascade(label="Help", menu=m_help)
+        self.root.configure(menu=mb)
+        self.root.bind_all("<Control-n>", lambda _e: self._new_analysis())
+
+    def _open_path(self, path: Path) -> None:
+        if not path.exists():
+            messagebox.showinfo(TOOL_NAME, f"Not found:\n{path}")
+            return
+        try:
+            os.startfile(str(path))  # type: ignore[attr-defined]  # Windows only
+        except OSError as exc:
+            messagebox.showerror(TOOL_NAME, f"Could not open:\n{path}\n\n{exc}")
+
+    def _show_about(self) -> None:
+        messagebox.showinfo(
+            f"About {TOOL_NAME}",
+            f"{TOOL_NAME} {TOOL_VERSION}\n{TOOL_SUBTITLE}\n\n"
+            f"Project: {self.var_project.get()}\n"
+            f"Python: {sys.version.split()[0]}\n"
+            f"Pipeline: {PIPELINE_SCRIPT}\n"
+            f"Debug log: {LOG_FILE}")
+
     # ── header ───────────────────────────────────────────────────────────
     def _build_header(self) -> None:
         hdr = tk.Frame(self.root, bg=CLR_PRIMARY, height=76)
@@ -445,17 +538,35 @@ class RmtGuiApp:
         hdr.pack_propagate(False)
         # Intel logo band (left accent)
         tk.Frame(hdr, bg="#00C7FD", width=6).pack(side="left", fill="y")
+        self._logo_img = None
+        if APP_ICON_PNG.exists():
+            try:
+                img = tk.PhotoImage(file=str(APP_ICON_PNG))
+                self._logo_img = img.subsample(max(1, img.width() // 52))
+                tk.Label(hdr, image=self._logo_img, bg=CLR_PRIMARY).pack(side="left", padx=(12, 0))
+            except tk.TclError:
+                LOG.warning("Could not load header logo %s", APP_ICON_PNG)
         left = tk.Frame(hdr, bg=CLR_PRIMARY)
         left.pack(side="left", padx=(10, 0))
-        tk.Label(left, text=APP_TITLE,
+        title_row = tk.Frame(left, bg=CLR_PRIMARY)
+        title_row.pack(anchor="w")
+        tk.Label(title_row, text=APP_TITLE,
                  bg=CLR_PRIMARY, fg="#ffffff",
-                 font=("Segoe UI Semibold", 16)).pack(anchor="w")
-        tk.Label(left, text=APP_SUBTITLE,
+                 font=("Segoe UI Semibold", 18)).pack(side="left")
+        tk.Label(title_row, text=f"  v{TOOL_VERSION}",
                  bg=CLR_PRIMARY, fg="#93c5fd",
-                 font=("Segoe UI", 9)).pack(anchor="w")
-        tk.Label(hdr, text="MRC RMT Log Pipeline  ",
+                 font=("Segoe UI", 9)).pack(side="left", anchor="s", pady=(0, 5))
+        tk.Label(left, text=APP_SUBTITLE,
                  bg=CLR_PRIMARY, fg="#cfe6fb",
-                 font=("Segoe UI", 9)).pack(side="right", padx=10)
+                 font=("Segoe UI", 10)).pack(anchor="w")
+        right = tk.Frame(hdr, bg=CLR_PRIMARY)
+        right.pack(side="right", padx=14)
+        tk.Label(right, text="PROJECT", bg=CLR_PRIMARY, fg="#93c5fd",
+                 font=("Segoe UI", 8)).pack(anchor="e")
+        self.lbl_hdr_project = tk.Label(right, text=self.var_project.get(),
+                                        bg=CLR_DARK, fg="#ffffff", padx=10, pady=2,
+                                        font=("Segoe UI Semibold", 10))
+        self.lbl_hdr_project.pack(anchor="e")
 
     # ── notebook ─────────────────────────────────────────────────────────
     def _build_notebook(self) -> None:
@@ -515,6 +626,10 @@ class RmtGuiApp:
 
     def _next_tab(self) -> None:
         i = self.nb.index(self.nb.select())
+        # After a completed run the last tab's button starts a fresh analysis.
+        if i == self._tab_count() - 1 and self._analysis_done:
+            self._new_analysis()
+            return
         # From Tab 1: generate the CSV (Stage 1) before unlocking later tabs.
         if i == 0 and not self._tabs_unlocked:
             self._advance_from_input()
@@ -578,6 +693,8 @@ class RmtGuiApp:
             # Tab 1 acts as Stage 1: generate the CSV, then unlock the rest.
             self.btn_next.configure(text="Generate CSV & Continue \u2192",
                                     state="normal")
+        elif i == n - 1 and self._analysis_done:
+            self.btn_next.configure(text="\u21BA  Analyze Another Log", state="normal")
         else:
             self.btn_next.configure(text="Next \u2192",
                                     state="normal" if i < n - 1 else "disabled")
@@ -621,9 +738,24 @@ class RmtGuiApp:
         # window height, including small/laptop screens.
         t = self._make_scrollable_tab(self.tab_input)
 
-        # Experiment profile
-        prof = ttk.LabelFrame(t, text="Experiment Profile")
+        # Project + experiment profile
+        prof = ttk.LabelFrame(t, text="Project & Experiment Profile")
         prof.pack(fill="x", padx=10, pady=(10, 6))
+        jrow = ttk.Frame(prof, style="Card.TFrame")
+        jrow.pack(fill="x", padx=8, pady=(6, 0))
+        ttk.Label(jrow, text="Project:", style="Card.TLabel", width=16).pack(side="left")
+        self.cbo_project = ttk.Combobox(
+            jrow, textvariable=self.var_project, state="readonly", width=32,
+            values=list(PROJECT_BY_LABEL))
+        self.cbo_project.pack(side="left", padx=4)
+        self.cbo_project.bind("<<ComboboxSelected>>", self._on_project_change)
+        _proj_hint = ttk.Label(jrow, text="\u2139", style="Hint.TLabel")
+        _proj_hint.pack(side="left", padx=(4, 0))
+        _Tooltip(_proj_hint,
+                 "Platform the logs come from. Labels the HTML / PPT reports and\n"
+                 "selects project-specific START_RMT header aliases\n"
+                 "(e.g. WCL prints 'RxVref' where NVL prints 'RxDqVrefByte').\n\n"
+                 "Add a new project by editing projects.json \u2014 no code change needed.")
         prow = ttk.Frame(prof, style="Card.TFrame")
         prow.pack(fill="x", padx=8, pady=6)
         ttk.Label(prow, text="Profile:", style="Card.TLabel", width=16).pack(side="left")
@@ -799,15 +931,23 @@ class RmtGuiApp:
                        "or import a reference .jrp to clone its scales.",
                   style="Hint.TLabel", wraplength=940, justify="left").pack(anchor="w", padx=14, pady=(10, 0))
 
+        # Toolbar: three grouped cards — axis values | presets | JMP Graph Builder
         top = ttk.Frame(t); top.pack(fill="x", padx=10, pady=(8, 4))
-        ttk.Checkbutton(top, text="Apply axis settings (--jmp-axis-config)",
-                        variable=self.var_useaxis, command=self._refresh_preview).pack(side="left", padx=4)
-        self.btn_recalc = ttk.Button(top, text="Recalculate from csv file",
+        for c in range(3):
+            top.columnconfigure(c, weight=1, uniform="axisbar")
+
+        g_axis = ttk.LabelFrame(top, text="Axis Values")
+        g_axis.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        ttk.Checkbutton(g_axis, text="Apply axis settings (--jmp-axis-config)",
+                        variable=self.var_useaxis, command=self._refresh_preview).pack(
+            anchor="w", padx=8, pady=(6, 2))
+        rc_row = ttk.Frame(g_axis, style="Card.TFrame"); rc_row.pack(fill="x", padx=8, pady=(0, 8))
+        self.btn_recalc = ttk.Button(rc_row, text="\u21BB Recalculate from data",
                                       style="Accent.TButton", state="disabled",
                                       command=self._recalculate_axis)
-        self.btn_recalc.pack(side="left", padx=(12, 3))
-        _hint_lbl = ttk.Label(top, text="\u2139", style="Hint.TLabel")
-        _hint_lbl.pack(side="left")
+        self.btn_recalc.pack(side="left")
+        _hint_lbl = ttk.Label(rc_row, text="\u2139", style="Hint.TLabel")
+        _hint_lbl.pack(side="left", padx=(6, 0))
         _Tooltip(_hint_lbl,
                  "Re-calculate Min, Max, and Inc from the loaded data files.\n"
                  "+ Ref and \u2212 Ref values are preserved.\n\n"
@@ -816,10 +956,39 @@ class RmtGuiApp:
                  "When 'Process each file SEPARATELY' is selected with\n"
                  "multiple files, each file gets its OWN Min/Max/Inc — use\n"
                  "the 'Per-file axis values for:' dropdown below to view them.")
-        ttk.Button(top, text="Load .jrp reference\u2026", style="Accent.TButton",
-                   command=self._load_jrp).pack(side="right", padx=3)
-        ttk.Button(top, text="Load JSON\u2026", command=self._browse_axis_json).pack(side="right", padx=3)
-        ttk.Button(top, text="Save JSON\u2026", command=self._save_axis_json).pack(side="right", padx=3)
+
+        g_pre = ttk.LabelFrame(top, text="Axis Presets")
+        g_pre.grid(row=0, column=1, sticky="nsew", padx=4)
+        pre_row = ttk.Frame(g_pre, style="Card.TFrame"); pre_row.pack(fill="x", padx=8, pady=(8, 2))
+        ttk.Button(pre_row, text="Save JSON\u2026", command=self._save_axis_json).pack(
+            side="left", fill="x", expand=True, padx=(0, 3))
+        ttk.Button(pre_row, text="Load JSON\u2026", command=self._browse_axis_json).pack(
+            side="left", fill="x", expand=True, padx=3)
+        ttk.Button(pre_row, text="Load .jrp\u2026", command=self._load_jrp).pack(
+            side="left", fill="x", expand=True, padx=(3, 0))
+        ttk.Label(g_pre, text="Save / reuse axis scales, or clone them from a JMP report (.jrp).",
+                  style="Hint.TLabel").pack(anchor="w", padx=8, pady=(0, 6))
+
+        g_gb = ttk.LabelFrame(top, text="JMP Graph Builder (interactive)")
+        g_gb.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
+        gb_row = ttk.Frame(g_gb, style="Card.TFrame"); gb_row.pack(fill="x", padx=8, pady=(8, 2))
+        self.cbo_gb_param = ttk.Combobox(gb_row, textvariable=self.var_gb_param, state="readonly",
+                                         width=20, values=[GRAPH_BUILDER_ALL] + KNOWN_PARAMS)
+        self.cbo_gb_param.pack(side="left", fill="x", expand=True)
+        self.btn_gb = ttk.Button(gb_row, text="\u25B6 Open", style="Accent.TButton",
+                                 command=self._open_graph_builder)
+        self.btn_gb.pack(side="left", padx=(6, 0))
+        _gb_hint = ttk.Label(g_gb, text="Live Graph Builder with the current axis values \u2139",
+                             style="Hint.TLabel")
+        _gb_hint.pack(anchor="w", padx=8, pady=(0, 6))
+        _Tooltip(_gb_hint,
+                 "Opens the extracted CSV in JMP Graph Builder using the axis\n"
+                 "values in this tab (Min/Max/Inc/\u00b1Ref, colours) \u2014 windows stay\n"
+                 "open so you can fine-tune the chart interactively.\n\n"
+                 "Save it from JMP (File \u25B8 Save As .jrp) and use 'Load .jrp\u2026'\n"
+                 "to bring the tuned scales back into this tab.\n\n"
+                 "Requires the Stage-1 CSV (or CSV input) and the JMP executable\n"
+                 "set on Tab 1.")
 
         # Per-file axis selector — only shown for multiple files in "Process
         # each file SEPARATELY" mode, where each file can have its own
@@ -865,7 +1034,23 @@ class RmtGuiApp:
         _dfield("Inc", "inc"); _dfield("Minor ticks", "minor_ticks")
         _dfield("Major grid", "major_grid"); _dfield("Minor grid", "minor_grid")
         r2 = ttk.Frame(df, style="Card.TFrame"); r2.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Label(r2, text="+ ref color", style="Card.TLabel").pack(side="left", padx=(8, 2))
+        ttk.Label(r2, text="+ Ref", style="Card.TLabel").pack(side="left", padx=(8, 2))
+        ttk.Entry(r2, textvariable=self.def_vars["ref_plus"], width=6,
+                  justify="center").pack(side="left")
+        ttk.Label(r2, text="\u2212 Ref", style="Card.TLabel").pack(side="left", padx=(10, 2))
+        ttk.Entry(r2, textvariable=self.def_vars["ref_minus"], width=6,
+                  justify="center").pack(side="left")
+        btn_apply_ref = ttk.Button(r2, text="Apply \u00b1Ref to all",
+                                   command=self._apply_default_ref_to_all)
+        btn_apply_ref.pack(side="left", padx=(6, 0))
+        _Tooltip(btn_apply_ref,
+                 "Default \u00b1Ref (pass/fail reference line).\n\n"
+                 "\u2022 Used for any parameter whose +Ref / \u2212Ref cell below is empty\n"
+                 "  (JMP ref line, HTML/PPT PASS/WARN/FAIL and red raw-data cells).\n"
+                 "\u2022 'Apply \u00b1Ref to all' copies it into every chart-enabled\n"
+                 "  parameter's +Ref / \u2212Ref cell.\n"
+                 "Saved as defaults.ref_line_plus / ref_line_minus in the axis JSON.")
+        ttk.Label(r2, text="+ ref color", style="Card.TLabel").pack(side="left", padx=(16, 2))
         ttk.Combobox(r2, textvariable=self.def_vars["plus_color"], values=JMP_COLORS,
                      width=18, state="readonly").pack(side="left")
         ttk.Label(r2, text="\u2212 ref color", style="Card.TLabel").pack(side="left", padx=(16, 2))
@@ -939,6 +1124,7 @@ class RmtGuiApp:
         bar = ttk.Frame(t); bar.pack(fill="x", padx=12, pady=4)
         ttk.Button(bar, text="\u21BB Reset to Auto", command=self._refresh_preview).pack(side="left", padx=3)
         ttk.Button(bar, text="Open Output Folder", command=self._open_outdir).pack(side="left", padx=3)
+        ttk.Button(bar, text="Open HTML Report", command=self._open_report).pack(side="left", padx=3)
         self.btn_run = ttk.Button(bar, text="\u25B6  Run Pipeline", style="Run.TButton", command=self._run)
         self.btn_run.pack(side="right", padx=3)
         self.btn_stop = ttk.Button(bar, text="\u25A0 Stop", command=self._stop, state="disabled")
@@ -1146,6 +1332,17 @@ class RmtGuiApp:
         base = first if first.is_dir() else first.parent
         self.var_outdir.set(str(base / f"RMT_Output_{ts}"))
 
+    def _open_report(self) -> None:
+        d = self.var_outdir.get().strip()
+        reports = []
+        if d and Path(d).is_dir():
+            reports = sorted(Path(d).rglob("RMT_Report.html"),
+                             key=lambda p: p.stat().st_mtime, reverse=True)
+        if not reports:
+            messagebox.showinfo("Report", "No RMT_Report.html found in the output folder yet.")
+            return
+        self._open_path(reports[0])
+
     # ── pickers ──────────────────────────────────────────────────────────
     def _pick_outdir(self) -> None:
         d = filedialog.askdirectory(title="Select output directory")
@@ -1168,6 +1365,16 @@ class RmtGuiApp:
                 pass
         else:
             messagebox.showinfo("Output", "Output folder does not exist yet.")
+
+    # ── project ─────────────────────────────────────────────────────────
+    def _project_key(self) -> str:
+        return PROJECT_BY_LABEL.get(self.var_project.get(), PROJECT_REGISTRY["default"])
+
+    def _on_project_change(self, event=None) -> None:
+        if hasattr(self, "lbl_hdr_project"):
+            self.lbl_hdr_project.configure(text=self.var_project.get())
+        self.status.set(f"Project set to {self.var_project.get()}.")
+        self._refresh_preview()
 
     # ── source toggle ──────────────────────────────────────────────────
     def _profile_is_thermal(self) -> bool:
@@ -1295,6 +1502,9 @@ class RmtGuiApp:
 
         field_label = {"min": "Min", "max": "Max", "inc": "Inc", "ref_line": "Ref"}
         side_prefix = {"plus": "+", "minus": "-"}
+        # An empty per-parameter Ref falls back to the default \u00b1Ref.
+        has_default_ref = {"plus": self._default_ref_value(True) is not None,
+                           "minus": self._default_ref_value(False) is not None}
 
         def _missing_for(params: dict, enabled: dict) -> list[str]:
             out = []
@@ -1307,6 +1517,7 @@ class RmtGuiApp:
                     for side in ("plus", "minus")
                     for f in ("min", "max", "inc", "ref_line")
                     if pc.get(side, {}).get(f) is None
+                    and not (f == "ref_line" and has_default_ref[side])
                 ]
                 if missing_fields:
                     out.append(f"{p} ({', '.join(missing_fields)})")
@@ -1343,6 +1554,8 @@ class RmtGuiApp:
         if "show_minor_grid" in defs: self.def_vars["minor_grid"].set(_fmt(defs["show_minor_grid"]))
         if "ref_line_plus_color" in defs: self.def_vars["plus_color"].set(defs["ref_line_plus_color"])
         if "ref_line_minus_color" in defs: self.def_vars["minus_color"].set(defs["ref_line_minus_color"])
+        self.def_vars["ref_plus"].set(_fmt(abs(float(defs.get("ref_line_plus", 10)))))
+        self.def_vars["ref_minus"].set(_fmt(-abs(float(defs.get("ref_line_minus", -10)))))
         params = data.get("parameters", {})
         for p in KNOWN_PARAMS:
             pc = params.get(p, {})
@@ -1392,6 +1605,7 @@ class RmtGuiApp:
                     "show_major_grid": 1, "show_minor_grid": 1,
                     "ref_line_plus_color": "Medium Light Red",
                     "ref_line_minus_color": "Blue",
+                    "ref_line_plus": 10, "ref_line_minus": -10,
                 },
                 "parameters": {},
             }
@@ -1415,6 +1629,8 @@ class RmtGuiApp:
                 "show_minor_grid": _n(self.def_vars["minor_grid"].get(), 1),
                 "ref_line_plus_color": self.def_vars["plus_color"].get(),
                 "ref_line_minus_color": self.def_vars["minus_color"].get(),
+                "ref_line_plus": abs(_n(self.def_vars["ref_plus"].get(), 10)),
+                "ref_line_minus": -abs(_n(self.def_vars["ref_minus"].get(), -10)),
             },
             "parameters": {},
         }
@@ -1458,6 +1674,7 @@ class RmtGuiApp:
         self.def_vars["major_grid"].set("1"); self.def_vars["minor_grid"].set("1")
         self.def_vars["plus_color"].set("Medium Light Red")
         self.def_vars["minus_color"].set("Blue")
+        self.def_vars["ref_plus"].set("10"); self.def_vars["ref_minus"].set("-10")
 
         default_dict = self._default_axis_dict()
         self._set_axis_from_dict(default_dict)
@@ -1476,6 +1693,166 @@ class RmtGuiApp:
             self._refresh_axis_file_selector()
 
         self._refresh_preview()
+
+    # ── default ±Ref ───────────────────────────────────────────────────
+    def _default_ref_value(self, is_plus: bool) -> float | None:
+        var = self.def_vars["ref_plus" if is_plus else "ref_minus"]
+        try:
+            mag = abs(float(var.get().strip()))
+        except ValueError:
+            return None
+        return mag if is_plus else -mag
+
+    def _apply_default_ref_to_all(self) -> None:
+        rp, rm = self._default_ref_value(True), self._default_ref_value(False)
+        if rp is None or rm is None:
+            messagebox.showwarning("Default \u00b1Ref", "Enter numeric + Ref and \u2212 Ref values first.")
+            return
+        applied = 0
+        for p in KNOWN_PARAMS:
+            if not self.param_vars[p].get():
+                continue
+            self.axis_vars[(p, "plus", "ref_line")].set(_fmt(rp))
+            self.axis_vars[(p, "minus", "ref_line")].set(_fmt(rm))
+            applied += 1
+        self._redraw_all_axis_previews()
+        self.status.set(f"Applied default +Ref {_fmt(rp)} / \u2212Ref {_fmt(rm)} to {applied} parameter(s).")
+
+    # ── JMP Graph Builder (interactive) ────────────────────────────────
+    def _graph_builder_csvs(self) -> list[Path]:
+        if self._stage1_csv and Path(self._stage1_csv).is_file():
+            cands = [Path(self._stage1_csv)]
+        else:
+            cands = [Path(p) for p in self._all_paths() if Path(p).suffix.lower() == ".csv"]
+            if not cands:
+                cands = [Path(p) for p in self._find_stage1_csvs()]
+        if self.var_source.get() == SRC_CSV:
+            listed = [Path(p) for p in self._all_paths() if Path(p).suffix.lower() == ".csv"]
+            if listed:
+                cands = listed
+        return [c for c in cands if c.is_file()]
+
+    def _open_graph_builder(self) -> None:
+        import csv as _csv
+        import importlib
+
+        csvs = self._graph_builder_csvs()
+        if not csvs:
+            messagebox.showinfo(
+                "JMP Graph Builder",
+                "No extracted CSV is available yet.\n\n"
+                "Generate the Stage-1 CSV from Tab 1 (or load existing CSV files) first.")
+            return
+        jmp = self.var_jmp.get().strip()
+        if not jmp or not Path(jmp).is_file():
+            messagebox.showerror("JMP Graph Builder",
+                                 f"JMP executable not found:\n{jmp or '(not set)'}\n\n"
+                                 "Set it under Tab 1 \u25B8 Tools & Options.")
+            return
+        try:
+            pipeline = importlib.import_module("rmt_log_pipeline")
+        except Exception as exc:
+            messagebox.showerror("JMP Graph Builder", f"Could not import rmt_log_pipeline:\n{exc}")
+            return
+
+        rows: list[dict] = []
+        for c in csvs:
+            try:
+                with c.open(encoding="utf-8", errors="replace", newline="") as fh:
+                    for r in _csv.DictReader(fh):
+                        if len(csvs) > 1:
+                            r["SourceFile"] = c.stem if c.stem != "RMT_Combined_Extended" else c.parent.name
+                        rows.append(r)
+            except (FileNotFoundError, PermissionError) as exc:
+                messagebox.showerror("JMP Graph Builder", f"Could not read {c}:\n{exc}")
+                return
+        if not rows:
+            messagebox.showinfo("JMP Graph Builder", "The CSV contains no RMT rows.")
+            return
+
+        outdir = Path(self.var_outdir.get().strip() or csvs[0].parent)
+        try:
+            outdir.mkdir(parents=True, exist_ok=True)
+            csv_in = csvs[0]
+            if len(csvs) > 1:
+                csv_in = outdir / "RMT_GraphBuilder_Input.csv"
+                pipeline.write_csv(csv_in, rows, pipeline.EXTENDED_COLUMNS)
+            sel = self.var_gb_param.get()
+            params = self._selected_params() if sel == GRAPH_BUILDER_ALL else [sel]
+            if not params:
+                messagebox.showinfo("JMP Graph Builder", "Tick at least one parameter to chart.")
+                return
+            jsl = pipeline.generate_jmp_jsl(csv_in, outdir, params, self._axis_to_dict(),
+                                            rows=rows, interactive=True)
+        except (PermissionError, OSError) as exc:
+            messagebox.showerror("JMP Graph Builder", f"Could not write the JSL script:\n{exc}")
+            return
+
+        try:
+            proc = subprocess.Popen([jmp, str(jsl)], cwd=str(outdir))
+        except OSError as exc:
+            messagebox.showerror("JMP Graph Builder", f"Could not launch JMP:\n{exc}")
+            return
+
+        def _check() -> None:
+            rc = proc.poll()
+            if rc not in (None, 0):
+                messagebox.showwarning("JMP Graph Builder",
+                                       f"JMP exited with code {rc}.\nScript kept at:\n{jsl}")
+        self.root.after(5000, _check)
+        self.status.set(f"Opening JMP Graph Builder for {', '.join(params)} \u2014 script: {jsl}")
+
+    # ── New analysis (reset to launch state) ───────────────────────────
+    def _new_analysis(self, confirm: bool = True) -> None:
+        """Re-initialise the session to the state the tool opens in, so the
+        next log set starts from Tab 1 with 'Boot / MRC logs' selected.
+        The Project, JMP executable and PPT template are kept (tool settings);
+        everything else — files, source, profile, output, stage, axis values,
+        per-file axis data, locked tabs and the run log — is reset."""
+        if self._proc is not None:
+            messagebox.showinfo("Busy", "A pipeline run is in progress \u2014 stop it first.")
+            return
+        if confirm and (self._all_paths() or self._tabs_unlocked) and not messagebox.askyesno(
+                "Analyze Another Log",
+                "Start a new analysis?\n\nThe current inputs and settings are cleared "
+                "(generated outputs stay on disk).\nProject, JMP path and PPT template are kept."):
+            return
+        self.lst.delete(0, "end")
+        self.var_source.set(SRC_LOGS)
+        self.var_profile.set(PROFILE_LABELS[PROFILE_NONTHERMAL])
+        self.var_pattern.set(DEFAULT_PATTERN)
+        self.var_outdir.set("")
+        self.var_excel.set(DEFAULT_EXCEL)
+        self.var_ppt.set(DEFAULT_PPT)
+        self.var_stage.set(DEFAULT_STAGE)
+        self.var_jslonly.set(False)
+        self.var_approval.set(False)
+        self.var_multimode.set("concat")
+        self.var_useaxis.set(True)
+        self.var_axispath.set(AXIS_CONFIG)
+        self.var_gb_param.set(GRAPH_BUILDER_ALL)
+
+        self._completed_stages.clear()
+        self._active_stage = None
+        self._run_ok = True
+        self._tabs_unlocked = False
+        self._analysis_done = False
+        self._stage1_csv = None
+        self.var_csvinfo.set(CSVINFO_LOCKED)
+        self.per_file_axis.clear()
+        self._axis_file_map = {}
+        self._axis_last_file = None
+        self.var_axis_file.set("")
+
+        self._reset_params()          # charted params + axis grid + Defaults from JSON
+        self.txt_log.delete("1.0", "end")
+        for i in (1, 2):
+            self.nb.tab(i, state="disabled")
+        self.nb.select(self.tab_input)
+        self._on_profile_change()     # also re-applies source hints / stage state
+        self._after_files_changed()
+        self._update_nav()
+        self.status.set("Ready for a new analysis \u2014 add MRC logs on Tab 1.")
 
     # ──────────────────────────────────────────────────────────────────
     # Axis preview canvas drawing
@@ -1515,6 +1892,10 @@ class RmtGuiApp:
         p_ref = _v("plus",  "ref_line")
         m_min = _v("minus", "min");  m_max = _v("minus", "max")
         m_ref = _v("minus", "ref_line")
+        if p_ref is None:
+            p_ref = self._default_ref_value(True)
+        if m_ref is None:
+            m_ref = self._default_ref_value(False)
         inc   = _v("plus",  "inc")
 
         # Background
@@ -1743,7 +2124,10 @@ class RmtGuiApp:
                 with p.open(encoding="utf-8", errors="replace", newline="") as fh:
                     return list(_csv.DictReader(fh))
             pipeline = importlib.import_module("rmt_log_pipeline")
+            pipeline.set_param_aliases(project_param_aliases(self._project_key(), PROJECT_REGISTRY))
             text = pipeline.read_text_file(p)
+            if self._profile_is_thermal():
+                return pipeline.parse_dtr_rmt_from_text(text, p.name)
             return pipeline.parse_rmt_from_text(text, p.name)
         except Exception:
             return []
@@ -2003,7 +2387,7 @@ class RmtGuiApp:
     def _build_single_command(self, files: list[str], outdir: str,
                               axis_path: str, fields_override: str | None = None) -> list[str]:
         src    = self.var_source.get()
-        cmd = [PYTHON_EXE, PIPELINE_SCRIPT]
+        cmd = [PYTHON_EXE, PIPELINE_SCRIPT, "--project", self._project_key()]
         fields = fields_override if fields_override is not None else ",".join(self._selected_params())
 
         def _axis():
@@ -2324,7 +2708,6 @@ class RmtGuiApp:
             self._run_ok = ok and not self._stop_requested
             LOG.info("Worker finished: ok=%s stop_requested=%s", ok, self._stop_requested)
             self._log_q.put("__DONE__")
-            self._log_q.put("__DONE__")
 
     def _stop(self) -> None:
         self._stop_requested = True
@@ -2359,7 +2742,13 @@ class RmtGuiApp:
                 self.nb.select(self.tab_axis)
                 self.root.after(150, self._redraw_all_axis_previews)
         else:
-            self.status.set("Done." if self._run_ok else "Stopped / failed.")
+            if self._active_stage is None and self._run_ok:
+                self._analysis_done = True
+                self.status.set("Done \u2014 outputs are in the output folder. "
+                                "Click '\u21BA Analyze Another Log' to start a new analysis.")
+                self._update_nav()
+            else:
+                self.status.set("Done." if self._run_ok else "Stopped / failed.")
         self._active_stage = None
 
     def _drain_log(self) -> None:

@@ -1,7 +1,12 @@
 @echo off
 REM ===================================================================
-REM  RMT Margin Analysis Tool - Novalake HX - GUI Launcher
+REM  MarginIQ - Intel CCG CVE DDR5 RMT Margin Analysis Tool - GUI Launcher
 REM  Double-click this file to open the graphical front-end.
+REM
+REM  Windows cannot attach an icon to a .bat file itself, so the first run
+REM  creates "MarginIQ.lnk" next to this file: the same launcher carrying the
+REM  MarginIQ icon (assets\marginiq.ico). Pin / copy that shortcut anywhere.
+REM  setup.bat also creates the Desktop / Start menu / taskbar shortcuts.
 REM
 REM  Interpreter priority:
 REM    1. .venv created by setup.bat   (recommended)
@@ -37,6 +42,11 @@ if not defined PYTHON_EXE (
     set "PYTHONW_EXE=pythonw"
     echo [WARN] No .venv found. Run setup.bat once to create the virtual
     echo        environment with all required dependencies.
+)
+
+REM Icon'd twin of this launcher (created once; see header).
+if not exist "%SCRIPT_DIR%MarginIQ.lnk" if exist "%SCRIPT_DIR%scripts\create_shortcuts.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%scripts\create_shortcuts.ps1" -Local >nul 2>&1
 )
 
 REM Launch without a console window when pythonw is available.

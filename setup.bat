@@ -1,6 +1,6 @@
 @echo off
 REM ===================================================================
-REM  RMT Margin Analysis Tool - Environment Setup
+REM  MarginIQ (RMT Margin Analysis Tool) - Environment Setup
 REM
 REM  Creates a local virtual environment (.venv) next to this script and
 REM  installs every Python dependency listed in requirements.txt.
@@ -13,7 +13,17 @@ REM  Usage:
 REM     setup.bat                     Create/refresh the environment
 REM     setup.bat --recreate          Delete .venv and build it from scratch
 REM     setup.bat --proxy <url>       Use this proxy for pip (this run only)
+REM     setup.bat --no-shortcuts      Skip every shortcut / icon step
+REM     setup.bat --all-shortcuts     Desktop + Start menu + Quick Launch +
+REM                                   taskbar pin without asking
+REM     setup.bat --no-prompt         Never ask: Desktop shortcut only
+REM                                   (use for unattended / agent runs)
 REM     setup.bat --help              Show this help
+REM
+REM  Shortcuts (step 6): a Desktop "MarginIQ" shortcut with the MarginIQ
+REM  icon is always created (plus an icon'd MarginIQ.lnk next to
+REM  Launch_RMT_GUI.bat); the taskbar pin and the Start menu / Quick
+REM  Launch entry are offered with Y/N prompts (30 s timeout = No).
 REM ===================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 
@@ -25,11 +35,16 @@ set "REQ_FILE=%SCRIPT_DIR%\requirements.txt"
 set "PROXY_CHECK=%SCRIPT_DIR%\scripts\check_proxy.py"
 set "RECREATE=0"
 set "PROXY_ARG="
+set "SHORTCUTS=ask"
+set "SHORTCUT_PS=%SCRIPT_DIR%\scripts\create_shortcuts.ps1"
 
 :parse_args
 if "%~1"=="" goto args_done
 if /I "%~1"=="--recreate" set "RECREATE=1"
 if /I "%~1"=="-r"         set "RECREATE=1"
+if /I "%~1"=="--no-shortcuts"  set "SHORTCUTS=none"
+if /I "%~1"=="--all-shortcuts" set "SHORTCUTS=all"
+if /I "%~1"=="--no-prompt"     set "SHORTCUTS=desktop"
 if /I "%~1"=="--help"     goto usage
 if /I "%~1"=="-h"         goto usage
 if /I "%~1"=="/?"         goto usage
@@ -47,7 +62,7 @@ goto parse_args
 
 echo.
 echo ===================================================================
-echo   RMT Margin Analysis Tool - Setup
+echo   MarginIQ (RMT Margin Analysis Tool) - Setup
 echo ===================================================================
 echo   Tool folder : %SCRIPT_DIR%
 echo   Virtual env : %VENV_DIR%
@@ -60,9 +75,9 @@ if not exist "%REQ_FILE%" (
 )
 
 REM ---------------------------------------------------------------
-REM  Step 1/5 - Locate a suitable Python interpreter (3.10 or newer)
+REM  Step 1/6 - Locate a suitable Python interpreter (3.10 or newer)
 REM ---------------------------------------------------------------
-echo [1/5] Locating a Python 3.10+ interpreter...
+echo [1/6] Locating a Python 3.10+ interpreter...
 set "BASE_PY="
 
 call :try_python "C:\Program Files\Python314\python.exe"
@@ -109,10 +124,10 @@ if errorlevel 1 (
 )
 
 REM ---------------------------------------------------------------
-REM  Step 2/5 - Create (or reuse) the virtual environment
+REM  Step 2/6 - Create (or reuse) the virtual environment
 REM ---------------------------------------------------------------
 echo.
-echo [2/5] Preparing virtual environment...
+echo [2/6] Preparing virtual environment...
 
 if "%RECREATE%"=="1" (
     if exist "%VENV_DIR%" (
@@ -141,10 +156,10 @@ if not exist "%VENV_PY%" (
 )
 
 REM ---------------------------------------------------------------
-REM  Step 3/5 - Install the pinned dependencies
+REM  Step 3/6 - Install the pinned dependencies
 REM ---------------------------------------------------------------
 echo.
-echo [3/5] Installing dependencies from requirements.txt...
+echo [3/6] Installing dependencies from requirements.txt...
 
 REM --proxy overrides every other proxy source for this process only.
 REM PIP_PROXY beats pip.ini; HTTP(S)_PROXY replace any inherited values.
@@ -179,10 +194,10 @@ if errorlevel 1 (
 )
 
 REM ---------------------------------------------------------------
-REM  Step 4/5 - Verify the environment can import everything
+REM  Step 4/6 - Verify the environment can import everything
 REM ---------------------------------------------------------------
 echo.
-echo [4/5] Verifying installed packages...
+echo [4/6] Verifying installed packages...
 "%VENV_PY%" -c "import openpyxl, pptx, tkinter; print('      openpyxl  ' + openpyxl.__version__); print('      python-pptx ready'); print('      tkinter   ready')"
 if errorlevel 1 (
     echo.
@@ -195,10 +210,10 @@ if errorlevel 1 (
 if errorlevel 1 echo       pillow    NOT installed ^(optional - GUI screenshot capture disabled^)
 
 REM ---------------------------------------------------------------
-REM  Step 5/5 - Detect the JMP installation (never installed by us)
+REM  Step 5/6 - Detect the JMP installation (never installed by us)
 REM ---------------------------------------------------------------
 echo.
-echo [5/5] Detecting JMP installation ^(provided by Windows, not by pip^)...
+echo [5/6] Detecting JMP installation ^(provided by Windows, not by pip^)...
 call :detect_jmp
 
 if defined JMP_EXE (
@@ -215,12 +230,19 @@ if defined JMP_EXE (
     echo        GUI field "JMP executable" at it.
 )
 
+REM ---------------------------------------------------------------
+REM  Step 6/6 - Desktop / taskbar / Start menu shortcuts (MarginIQ icon)
+REM ---------------------------------------------------------------
+echo.
+echo [6/6] Creating MarginIQ shortcuts...
+call :make_shortcuts
+
 echo.
 echo ===================================================================
 echo   SETUP COMPLETE
 echo ===================================================================
 echo.
-echo   Launch the GUI          :  Launch_RMT_GUI.bat
+echo   Launch the GUI          :  MarginIQ desktop icon  or  Launch_RMT_GUI.bat
 echo   Interactive CLI wrapper :  .venv\Scripts\python.exe rmt_pipeline_runner.py
 echo   Raw pipeline CLI        :  .venv\Scripts\python.exe rmt_log_pipeline.py --help
 echo.
@@ -233,6 +255,31 @@ exit /b 0
 REM ===================================================================
 REM  Subroutines
 REM ===================================================================
+
+:make_shortcuts
+if /I "%SHORTCUTS%"=="none" (
+    echo       Skipped ^(--no-shortcuts^).
+    goto :eof
+)
+if not exist "%SHORTCUT_PS%" (
+    echo [WARN] scripts\create_shortcuts.ps1 not found - shortcuts skipped.
+    goto :eof
+)
+set "SC_ARGS=-Desktop -Local"
+if /I "%SHORTCUTS%"=="all" set "SC_ARGS=-Desktop -Local -StartMenu -QuickLaunch -Taskbar"
+if /I "%SHORTCUTS%"=="ask" call :ask_shortcuts
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SHORTCUT_PS%" -ToolDir "%SCRIPT_DIR%" !SC_ARGS!
+if errorlevel 1 echo [WARN] Some shortcuts could not be created - the tool still runs from Launch_RMT_GUI.bat.
+goto :eof
+
+:ask_shortcuts
+REM choice exits 1 = Y, 2 = N; 255 (no console, e.g. an agent run) = No.
+echo       The Desktop shortcut is always created. Optional extras:
+choice /C YN /T 30 /D N /M "      Pin MarginIQ to the taskbar"
+if "!errorlevel!"=="1" set "SC_ARGS=!SC_ARGS! -Taskbar"
+choice /C YN /T 30 /D N /M "      Add MarginIQ to the Start menu and Quick Launch toolbar"
+if "!errorlevel!"=="1" set "SC_ARGS=!SC_ARGS! -StartMenu -QuickLaunch"
+goto :eof
 
 :try_python
 REM %~1 = candidate interpreter. Accepts it only when it exists, is not the
@@ -271,13 +318,19 @@ goto :eof
 
 :usage
 echo.
-echo RMT Margin Analysis Tool - setup.bat
+echo MarginIQ ^(RMT Margin Analysis Tool^) - setup.bat
 echo.
-echo   setup.bat                   Create .venv and install requirements.txt
+echo   setup.bat                   Create .venv, install requirements.txt, create shortcuts
 echo   setup.bat --recreate        Delete .venv first, then rebuild it
 echo   setup.bat --proxy ^<url^>     Use this proxy for pip, this run only
 echo                               e.g. --proxy http://proxy-chain.intel.com:912
+echo   setup.bat --no-shortcuts    Do not create any shortcut
+echo   setup.bat --all-shortcuts   Desktop + Start menu + Quick Launch + taskbar, no questions
+echo   setup.bat --no-prompt       Desktop shortcut only, no questions ^(unattended / agent^)
 echo   setup.bat --help            Show this help
+echo.
+echo Shortcuts only: powershell -ExecutionPolicy Bypass -File scripts\create_shortcuts.ps1 -Desktop
+echo Remove them   : powershell -ExecutionPolicy Bypass -File scripts\create_shortcuts.ps1 -Remove
 echo.
 echo JMP Pro is never installed by this script - it must already be present
 echo as a Windows application. setup.bat only detects and reports it.

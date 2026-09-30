@@ -1,14 +1,16 @@
 ---
 name: rmt-margin-plots
-description: Run the RMT Margin Analysis Tool to extract START_RMT blocks from MRC debug logs and produce CSV, Excel, JMP scatter charts, an HTML report, and a PowerPoint deck. Use when asked to plot/chart/analyze RMT margins, RxDqVrefByte/TxVref/RecEnDelay margins, build RMT slides, or convert lab logs into margin charts.
+description: Run MarginIQ (Intel CCG CVE DDR5 RMT Margin Analysis Tool) to extract START_RMT blocks from MRC debug logs of any supported project (Nova Lake, Wildcat Lake, ...) and produce CSV, Excel, JMP scatter charts, an HTML report (with DDR5 Mode Register and ODT tabs), and a PowerPoint deck. Use when asked to plot/chart/analyze RMT margins, RxDqVrefByte/TxVref/RecEnDelay margins, report MR / RTT_WR / ODT values, build RMT slides, or convert lab logs into margin charts.
 ---
 
-# RMT Margin Plotting
+# RMT Margin Plotting (MarginIQ)
 
-Drives the RMT Margin Analysis Tool — the scripts at the **root of this
+Drives **MarginIQ** — *Intel CCG CVE DDR5 RMT Margin Analysis Tool* — the scripts at the **root of this
 repository** — non-interactively, so margin plots can be produced directly from
 a chat request. The skill is self-contained: it depends only on files inside this
 repository plus the machine's own Python / optional JMP Pro install.
+This is MarginIQ's **agentic mode**; the user-facing description is in the README
+section "Agentic mode (GitHub Copilot)".
 
 ## Tool layout
 
@@ -16,9 +18,11 @@ repository plus the machine's own Python / optional JMP Pro install.
 |------|------|
 | `rmt_log_pipeline.py` | Core CLI engine — **this is what the agent runs** |
 | `rmt_pipeline_runner.py` | Interactive menu wrapper — **never run from the agent** (it blocks on `input()`) |
-| `rmt_gui.py` / `Launch_RMT_GUI.bat` | Tk GUI — **never run from the agent** |
-| `setup.bat` | One-time `.venv` creation + dependency install |
-| `jmp_axis_settings.json` | Per-parameter Y-axis min/max/inc/ref-line config |
+| `rmt_gui.py` / `Launch_RMT_GUI.bat` / `MarginIQ.lnk` (desktop, Start menu, taskbar) | Tk GUI and its shortcuts — **never run from the agent** |
+| `setup.bat` | One-time `.venv` creation + dependency install + shortcuts — the agent runs it **only** as `setup.bat --no-prompt` |
+| `jmp_axis_settings.json` | Per-parameter Y-axis min/max/inc/ref-line config + default `ref_line_plus` / `ref_line_minus` |
+| `projects.json` | Project registry (NVL, WCL, ...) used by `--project` |
+| `rmt_project.py` | Branding / version / project-registry helper (imported by the CLI and GUI) |
 
 All paths above are relative to the repository root.
 
@@ -28,7 +32,8 @@ All paths above are relative to the repository root.
    `<repo>\.venv\Scripts\python.exe`.
    Resolve `<repo>` with `git rev-parse --show-toplevel` (see step 2) — **never
    hardcode a user-specific path**, since clone locations differ per machine.
-   If the interpreter is missing, run `setup.bat` first.
+   If the interpreter is missing, run `setup.bat --no-prompt` first (plain
+   `setup.bat` asks taskbar / Start-menu shortcut questions).
 2. **Always pass `--no-ask-chart-approval`.** The pipeline otherwise prompts on
    stdin and the run will hang. Get the user's approval with `ask_user` *before*
    launching instead.
@@ -38,6 +43,9 @@ All paths above are relative to the repository root.
    If either is missing, ask with `ask_user` — do not guess a `c:\lab_Logs\...` path.
 5. JMP charts require `--jmp-exe`; there is no auto-detection inside the pipeline.
    Resolve it first (see below) and fall back to base mode if JMP is absent.
+6. **JMP is single-instance:** a JMP run force-closes any open JMP window first.
+   If `Get-Process jmp` shows JMP running, warn the user (unsaved work) and get
+   their OK before a `--generate-jmp-charts` / `--jmp-from-*` run.
 
 ## What actually gets produced
 
@@ -51,6 +59,30 @@ writes the full CSV + Excel + HTML + native PPT set.
 | **JMP** | `--generate-jmp-charts --jmp-exe <path>` | everything above **plus** `rmt_jmp_charts.jsl`, `jmp_charts/*.png`, `RMT_Summary_JMP_Charts.pptx` |
 
 `--ppt-template <pptx>` (optional) styles the JMP deck from an existing template.
+
+`RMT_Report.html` tabs: Overview, Frequency, Parameters, RunTemp, Training Steps,
+Platform, **Mode Registers** (final per-rank DDR5 MR table with JEDEC decodes,
+training-changed and rank-varying MRs highlighted, cross-log MR diff), **ODT**
+(DIMM ODT summary — RTT_WR / RTT_NOM_WR / RTT_NOM_RD / RTT_PARK / DQS_RTT_PARK /
+CA / CS / Ron — CPU read ODT, per-rank ODT decoded from MR32-36, ODT latency
+offsets, BIOS ODT inputs, cross-log ODT matrix), **JMP Charts** (dropdown-driven
+side-by-side comparison panels, pre-filled with every chart) and Raw Data. MR /
+ODT data is stored in `rmt_metadata.json`, so `--jmp-from-csv` re-runs in the
+same `--outdir` keep those tabs.
+
+To answer MR / ODT questions ("what RTT_WR did training pick?") without opening
+the HTML, read `rmt_metadata.json` → `platform_infos[*].mr_odt.snapshots[*]`
+(`final_mrs`, `init_mrs`, `odt_summary`, `cpu_read_odt`, `odtl`) and decode MRs
+with `rmt_log_pipeline.decode_ddr5_mr(mr, value)`.
+
+### Project (platform)
+
+Pass `--project <key|code|name>` (from `projects.json`; currently `NVL` = Nova
+Lake, `WCL` = Wildcat Lake). It labels the HTML / PPT reports and selects the
+project's START_RMT header aliases (WCL prints `RxVref` for `RxDqVrefByte` and
+per-byte rows `Mc0.C0.B0.R0`). Omitted → the registry default (`NVL`). An
+unknown value exits with code 2 and lists the known projects. New platforms are
+added by editing `projects.json` only.
 
 > `--chart-fields` only *selects which parameters are charted*. It does **not**
 > disable charting — an empty or omitted value means **all** parameters. There is
@@ -72,7 +104,9 @@ If the user mentions temperature drift, hot/cold, BCRH or BHRC, ask whether to u
 ### 1. Confirm inputs
 
 Use `ask_user` for anything not supplied: input log folder/file, output folder,
-whether JMP charts are wanted, and which parameters to chart. Default the output
+**project** (infer from the path/log only when unambiguous, e.g. `\NVL\` or
+`Detected board: WCL ...`; otherwise ask), whether JMP charts are wanted, and
+which parameters to chart. Default the output
 folder to the input folder if the user has no preference.
 
 ### 2. Resolve the tool folder, interpreter, and JMP
@@ -101,8 +135,10 @@ If `git rev-parse` fails (shell started outside the repo), fall back to the
 workspace root reported in the environment context and confirm
 `rmt_log_pipeline.py` exists there — still never a hardcoded user-specific path.
 
-If `$py` is missing: run `& (Join-Path $tool "setup.bat")` (add `--recreate` if
-the venv is broken). If setup stops with a proxy marked `INVALID` (e.g. the
+If `$py` is missing: run `& (Join-Path $tool "setup.bat") --no-prompt` (add
+`--recreate` if the venv is broken). `--no-prompt` creates only the Desktop
+shortcut and never asks questions, so the agent session cannot hang on the
+taskbar / Start-menu prompts. If setup stops with a proxy marked `INVALID` (e.g. the
 placeholder `http://proxy-server:port`), ask the user for their proxy and re-run
 with `--proxy <url>` (Intel network: `http://proxy-chain.intel.com:912`).
 If `$jmp` is empty: tell the user JMP Pro was not found and run base mode (CSV +
@@ -131,6 +167,7 @@ Base run (fast, no JMP required) — self-contained, re-derives paths:
 ```powershell
 $tool = (Resolve-Path (git rev-parse --show-toplevel)).Path
 & (Join-Path $tool ".venv\Scripts\python.exe") (Join-Path $tool "rmt_log_pipeline.py") `
+  --project "<NVL|WCL>" `
   --input "<input folder>" `
   --pattern "*.txt" `
   --outdir "<output folder>" `
@@ -149,6 +186,7 @@ $jmp  = @(
   "C:\Program Files\SAS\JMP\17\jmp.exe"
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 & (Join-Path $tool ".venv\Scripts\python.exe") (Join-Path $tool "rmt_log_pipeline.py") `
+  --project "<NVL|WCL>" `
   --input "<input folder>" `
   --pattern "*.txt" `
   --outdir "<output folder>" `
@@ -187,7 +225,7 @@ List the generated artifacts with their full paths and flag anything skipped
 |------|---------|--------|
 | 0 | Success | Report artifacts |
 | 1 | No input files matched `--input` / `--pattern` | Re-check the path and pattern with the user |
-| 2 | Input CSV / charts dir / Excel not found, or bad CLI arguments | Re-check the path with the user |
+| 2 | Input CSV / charts dir / Excel not found, no RMT blocks, unknown `--project`, or bad CLI arguments | Re-check the path / project with the user |
 | 3 | Chart approval denied (interactive mode only) | Always pass `--no-ask-chart-approval` |
 | 4 | JMP chart generation requested without `--jmp-exe` | Resolve JMP or run base mode |
 | 5 | JMP failed to generate or run the charts | Report the error; the JSL is kept in `<outdir>` for a manual run |
@@ -196,11 +234,18 @@ List the generated artifacts with their full paths and flag anything skipped
 
 To change Y-axis scale, tick increment, or reference lines, edit
 `jmp_axis_settings.json` — each parameter has `plus`/`minus` blocks with
-`min`, `max`, `inc`, `ref_line`. No code change is needed; re-run with
+`min`, `max`, `inc`, `ref_line`. `defaults.ref_line_plus` / `ref_line_minus`
+(default +10 / -10) is the pass/fail reference used for any parameter without
+its own `ref_line`: JMP ref lines (including DTR charts), PASS/WARN/FAIL status
+and the red raw-data cells all follow it. To use a different ±Ref for one run
+without touching the repo file, copy the JSON into the output folder, edit the
+copy and pass it via `--jmp-axis-config`. Never edit the shipped
+`jmp_axis_settings.json` unless the user explicitly asks to change the defaults.
+No code change is needed; re-run with
 `--generate-jmp-charts` (or `--jmp-from-csv`) afterwards.
 
 ## Reference docs
 
-- `README.md` — overview
+- `README.md` — user guide (install + shortcuts, GUI, **Agentic mode**, CLI, report, config)
 - `RMT_QUICKSTART.md` — copy-paste examples
 - `RMT_LOG_PIPELINE_README.md` — full CLI reference

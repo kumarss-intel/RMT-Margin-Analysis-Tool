@@ -1,0 +1,22 @@
+{
+  "_comment": "MarginIQ project registry. Add a new platform by adding an entry under 'projects' - no code change needed. 'param_aliases' maps a log's START_RMT header name to the tool's canonical parameter name (e.g. WCL prints RxVref where NVL prints RxDqVrefByte). 'axis_config' is the default Y-axis JSON for that project (relative to the repo root).",
+  "default": "NVL",
+  "projects": {
+    "NVL": {
+      "name": "Nova Lake",
+      "code": "NVL",
+      "memory": "DDR5",
+      "param_aliases": {},
+      "axis_config": "jmp_axis_settings.json"
+    },
+    "WCL": {
+      "name": "Wildcat Lake",
+      "code": "WCL",
+      "memory": "DDR5",
+      "param_aliases": {
+        "RxVref": "RxDqVrefByte"
+      },
+      "axis_config": "jmp_axis_settings.json"
+    }
+  }
+}

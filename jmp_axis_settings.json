@@ -6,7 +6,9 @@
     "show_major_grid": 1,
     "show_minor_grid": 1,
     "ref_line_plus_color": "Medium Light Red",
-    "ref_line_minus_color": "Blue"
+    "ref_line_minus_color": "Blue",
+    "ref_line_plus": 10,
+    "ref_line_minus": -10
   },
   "parameters": {
     "RecEnDelay": {

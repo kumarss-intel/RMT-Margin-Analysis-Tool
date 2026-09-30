@@ -6,5 +6,6 @@
 *.cmd text eol=crlf
 
 *.png  binary
+*.ico  binary
 *.pptx binary
 *.xlsx binary

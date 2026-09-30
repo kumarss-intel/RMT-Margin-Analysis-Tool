@@ -1,16 +1,28 @@
-# RMT Log Pipeline - Complete Reference Manual
+# MarginIQ RMT Log Pipeline - Complete Reference Manual
 
-📖 **Quick Links:** [Main README](README.md) · [Quick Start Guide](RMT_QUICKSTART.md) · [To Top](#rmt-log-pipeline---complete-reference-manual)
+*Intel CCG CVE DDR5 RMT Margin Analysis Tool*
+
+📖 **Quick Links:** [Main README](README.md) · [Quick Start Guide](RMT_QUICKSTART.md) · [Agentic mode](README.md#-agentic-mode-github-copilot) · [To Top](#marginiq-rmt-log-pipeline---complete-reference-manual)
 
 ---
 
 ## Overview
 
-`rmt_log_pipeline.py` extracts `START_RMT` data from one or more `.txt` log files and generates:
+`rmt_log_pipeline.py` is the MarginIQ engine used by the GUI, the agent skill and scripts. It
+extracts `START_RMT` data from one or more MRC `.txt` / `.log` files of any project in
+[`projects.json`](projects.json) and generates:
 
 1. CSV files in a format similar to your reference files.
 2. An Excel workbook with individual sheets.
-3. A PowerPoint summary with metric and chart slides.
+3. A self-contained HTML report, including the **Mode Registers** and **ODT** tabs and the JMP
+   chart comparison workspace.
+4. A PowerPoint summary with metric and chart slides.
+5. Optionally, JMP Graph Builder charts and a PPT built from them.
+
+The same engine runs in three modes: the **GUI** (MarginIQ desktop icon / `Launch_RMT_GUI.bat`),
+**agentic** (GitHub Copilot Agent mode, driven by
+[`.github/skills/rmt-margin-plots/SKILL.md`](.github/skills/rmt-margin-plots/SKILL.md); see
+[README › Agentic mode](README.md#-agentic-mode-github-copilot)), and the **CLI** described here.
 
 Script path:
 - `rmt_log_pipeline.py` (repository root)
@@ -27,10 +39,22 @@ The parser expects sections similar to:
 - `Setting gear ratio to <value>`
 - `START_RMT`
 - `Params: RecEnDelay TxDqsDelay ...`
-- Rows such as `Mc0.C0.R0: -32.0 32.0 ...`
+- Rows such as `Mc0.C0.R0: -32.0 32.0 ...` (or per-byte `Mc0.C0.B0.R0: ...`, e.g. Wildcat Lake)
 
-Each rank row should include 16 numeric values:
-- 8 parameters, each with minus/plus values.
+Each row holds one minus/plus pair per column of the `Params:` header (16 values for the 8
+standard parameters). Values are mapped by **header name**, so a different column order is
+handled. Project aliases from `projects.json` (e.g. WCL `RxVref` → `RxDqVrefByte`) are applied
+when `--project` is given.
+
+Additionally parsed for the HTML report and `rmt_metadata.json`:
+
+| Log section | Used for |
+|-------------|----------|
+| `MCx.Cy.Rz  Data  Delay (nCK)` table (SAGV Finalization) | Final per-rank Mode Register values |
+| `InitMrwDdr5:` MR writes (JEDEC RESET) | JEDEC-reset MR values ("changed by training" highlight) |
+| `DIMM ODT summary:` + `CPU Summary: ... Read ODT` (MRC Data Summary) | RTT_WR / NomWr / NomRd / Park / ParkDqs / CA / CS / Ron and CPU read ODT |
+| `Mc0.Ch0.R0: Ddr5OdtlOnWr:...` (DDR5 ODT Timing Config) | ODT latency offsets |
+| `DimmN ODT Values:`, `RcompTarget[RdOdt]`, `DDRIO ODT Mode` | BIOS / CPU ODT inputs |
 
 ---
 
@@ -176,8 +200,7 @@ The wrapper will guide you through:
 **Outputs:**
 - All Stage 2 outputs
 - `rmt_jmp_charts.jsl`
-- `jmp_charts/<Param>.png` (one per parameter, X=Params Y=±values Group=Frequency)
-- `jmp_charts/RMT_Dashboard.png`
+- `jmp_charts/<Param>.png` (one per parameter, X=Params Y=±values Group=Frequency, or Boot/Run temperature for DTR)
 
 ---
 
@@ -229,6 +252,9 @@ The wrapper will guide you through:
 
 | Switch | Default | Purpose |
 |--------|---------|---------|
+| `--project` | `NVL` (registry default) | Project from `projects.json` (key, code or name, e.g. `NVL`, `WCL`, `"Wildcat Lake"`); labels reports and selects START_RMT header aliases. Unknown value → exit 2 |
+| `--dtr` | False | Parse Thermal Experiment (DTR, BCRH/BHRC) logs: Boot-temp + Run-temp RMT per log |
+| `--version` | - | Print the MarginIQ version |
 | `--input` | *required* | Path(s) to input folder(s) or file(s) |
 | `--pattern` | `*.txt` | File glob pattern (when input is folder) |
 | `--outdir` | *required* | Output directory for all generated files |
@@ -261,8 +287,16 @@ In `--outdir`, the script creates:
 - One sheet per source file.
 - One sheet per frequency (`Freq_5600`, `Freq_6400`, ...).
 
-5. `RMT_Summary.pptx`
-- Title/coverage slide.
+5. `RMT_Report.html`
+- Self-contained interactive report: Overview, Frequency, Parameters, RunTemp, Training Steps,
+  Platform, **Mode Registers**, **ODT**, **JMP Charts** (dropdown comparison panels) and Raw Data.
+
+6. `rmt_metadata.json`
+- Tool version, project, training steps, platform info and MR / ODT data
+  (`platform_infos[*].mr_odt`). Reused by later `--jmp-from-csv` runs in the same `--outdir`.
+
+7. `RMT_Summary.pptx`
+- Title/coverage slide (MarginIQ branding, project, tool version).
 - Average window width text summary.
 - Overall chart (approved fields only).
 - Frequency comparison chart (approved fields only).
@@ -271,10 +305,10 @@ In `--outdir`, the script creates:
 
 Before PPT chart generation, the script asks for chart field approval in terminal (default behavior).
 
-6. Optional JMP artifacts
+8. Optional JMP artifacts
 - `rmt_jmp_charts.jsl` (auto-generated JSL script)
 - `jmp_charts/<Param>.png` (one PNG per parameter: X=Params, Y=param+/param-, Group X=Frequency)
-- `jmp_charts/RMT_Dashboard.png` (all parameters on one combined chart)
+- `rmt_graph_builder.jsl` (GUI Tab 2 *JMP Graph Builder*: interactive windows, no PNG export / Quit)
 - `<ppt-name stem>_JMP_Charts.pptx` (PPT assembling all JMP PNGs using the `--ppt-template` styling)
 
 ---
@@ -299,7 +333,7 @@ The similar CSV columns are:
 ## Notes and Limits
 
 1. If `BootTemp` and `RunTemp` are not present in logs, those fields remain blank.
-2. If a row has fewer than 16 numeric values after `McX.CY.RZ:`, it is skipped.
+2. If a row has fewer value pairs than its `Params:` header, it is skipped.
 3. If `python-pptx` is missing, CSV and Excel are still generated.
 4. By default, chart field approval is interactive. For automation, use `--no-ask-chart-approval` and optionally `--chart-fields`.
 
@@ -342,7 +376,9 @@ the Y-axis scale, tick increment, and reference lines for every JMP chart.
     "show_major_grid": 1,
     "show_minor_grid": 1,
     "ref_line_plus_color": "Medium Light Red",
-    "ref_line_minus_color": "Blue"
+    "ref_line_minus_color": "Blue",
+    "ref_line_plus": 10,
+    "ref_line_minus": -10
   },
   "parameters": {
     "TxVref": {
@@ -364,6 +400,7 @@ the Y-axis scale, tick increment, and reference lines for every JMP chart.
 | `ref_line` | Value at which a reference line is drawn |
 | `ref_line_plus_color` | Color for positive-panel reference line (default: `"Medium Light Red"`) |
 | `ref_line_minus_color` | Color for negative-panel reference line (default: `"Blue"`) |
+| `ref_line_plus` / `ref_line_minus` | **Default ±Ref** (defaults block only, default `10` / `-10`). Used for any parameter without its own `ref_line`: JMP reference lines (including DTR temperature charts), PASS/WARN/FAIL status and the red raw-data cells in the HTML report. GUI: Tab 2 ▸ Defaults ▸ + Ref / − Ref. |
 | `show_major_grid` | 1 = show major grid lines, 0 = hide |
 | `show_minor_grid` | 1 = show minor grid lines, 0 = hide |
 
@@ -480,6 +517,9 @@ python "rmt_log_pipeline.py" `
 
 | Switch | Default | Purpose |
 |--------|---------|---------|
+| `--project` | `NVL` (registry default) | Project from `projects.json` (key, code or name, e.g. `NVL`, `WCL`, `"Wildcat Lake"`); labels reports and selects START_RMT header aliases. Unknown value → exit 2 |
+| `--dtr` | False | Parse Thermal Experiment (DTR, BCRH/BHRC) logs: Boot-temp + Run-temp RMT per log |
+| `--version` | - | Print the MarginIQ version |
 | `--input` | *required* | Path(s) to input folder(s) or file(s) |
 | `--pattern` | `*.txt` | File glob pattern (when input is folder) |
 | `--outdir` | *required* | Output directory for all generated files |
@@ -492,7 +532,7 @@ python "rmt_log_pipeline.py" `
 | `--jmp-exe` | None | Path to jmp.exe executable |
 | `--jmp-jsl-only` | False | Generate JSL script without launching JMP |
 | `--ppt-template` | None | Path to .pptx template used for the JMP-charts PPT |
-| `--jmp-axis-config` | None | Path to `jmp_axis_settings.json` for chart axis customisation |
+| `--jmp-axis-config` | None | Path to `jmp_axis_settings.json` for chart axis customisation. `defaults.ref_line_plus` / `ref_line_minus` (default ±10) apply to any parameter without its own `ref_line` |
 
 ---
 
@@ -503,8 +543,8 @@ The script returns exit codes to indicate success or failure:
 | Code | Status | Meaning | Action |
 |------|--------|---------|--------|
 | 0 | ✅ Success | Extraction completed | Check output folder |
-| 1 | ⚠️ Warning | Partial extraction (some files failed) | Check logs for details |
-| 2 | ❌ Error | Invalid arguments or missing files | Review --help and paths |
+| 1 | ⚠️ Warning | No input files matched `--input` / `--pattern` | Check the path and pattern |
+| 2 | ❌ Error | Invalid arguments, missing files, no START_RMT blocks, or unknown `--project` | Review --help, paths and `projects.json` |
 | 3 | ❌ Denied | Chart approval was rejected | Re-run with --no-ask-chart-approval or approve charts |
 | 4 | ❌ Config | JMP executable not found | Verify --jmp-exe path |
 | 5 | ❌ Runtime | JMP execution failed | Check JSL script or JMP installation |

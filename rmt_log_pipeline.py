@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html as _html
 import re
 import statistics
 import subprocess
@@ -31,6 +32,18 @@ from typing import Any, Iterable
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
+
+from rmt_project import (
+    BUILTIN_PARAM_ALIASES,
+    TOOL_NAME,
+    TOOL_SUBTITLE,
+    TOOL_VERSION,
+    get_project,
+    load_projects,
+    project_label,
+    project_param_aliases,
+    resolve_project_key,
+)
 
 try:
     from pptx import Presentation
@@ -84,7 +97,57 @@ EXTENDED_COLUMNS = [
 ] + CSV_COLUMNS
 
 FLOAT_PATTERN = re.compile(r"-?\d+(?:\.\d+)?")
-ROW_PATTERN = re.compile(r"^(Mc\d+\.C\d+\.R\d+)\s*:\s*(.+)$")
+# Rank rows (NVL: "Mc0.C0.R0") and per-byte rows (WCL: "Mc0.C0.B0.R0").
+ROW_PATTERN = re.compile(r"^(Mc\d+\.C\d+(?:\.B\d+)?\.R\d+)\s*:\s*(.+)$")
+HEADER_PATTERN = re.compile(r"^Params\s*:\s*(.+)$", re.IGNORECASE)
+
+# Header alias map used by the parsers; main() extends it with the selected
+# project's aliases from projects.json.
+_ACTIVE_PARAM_ALIASES: dict[str, str] = dict(BUILTIN_PARAM_ALIASES)
+# Project label shown in the HTML / PPT reports; set by main() from --project.
+_ACTIVE_PROJECT_NAME: str | None = None
+
+
+def set_param_aliases(aliases: dict[str, str] | None) -> None:
+    """Replace the START_RMT header alias map (builtin aliases always kept)."""
+    _ACTIVE_PARAM_ALIASES.clear()
+    _ACTIVE_PARAM_ALIASES.update(BUILTIN_PARAM_ALIASES)
+    _ACTIVE_PARAM_ALIASES.update(aliases or {})
+
+
+def _header_param_order(header_line: str | None) -> list[str | None]:
+    """Canonical parameter per column pair of a ``Params:`` header.
+
+    Unknown names map to ``None`` (their values are skipped). Returns the
+    fixed PARAMS order when there is no usable header.
+    """
+    if not header_line:
+        return list(PARAMS)
+    m = HEADER_PATTERN.match(header_line.strip())
+    if not m:
+        return list(PARAMS)
+    names = m.group(1).split()
+    order: list[str | None] = []
+    for name in names:
+        canon = _ACTIVE_PARAM_ALIASES.get(name, name)
+        order.append(canon if canon in PARAMS else None)
+    return order if any(order) else list(PARAMS)
+
+
+def _assign_param_values(record: dict[str, Any], values: list[float],
+                         order: list[str | None]) -> bool:
+    """Fill ``<param>-`` / ``<param>+`` from a row's value pairs.
+
+    Returns False when the row holds fewer value pairs than the header.
+    """
+    if len(values) < 2 * len(order):
+        return False
+    for idx, param in enumerate(order):
+        if param is None:
+            continue
+        record[f"{param}-"] = values[2 * idx]
+        record[f"{param}+"] = values[2 * idx + 1]
+    return True
 # Matches "Setting boot frequency to 4800" (KIRK/legacy format)
 FREQ_PATTERN = re.compile(r"Setting\s+boot\s+frequency\s+to\s+(\d+)", re.IGNORECASE)
 # Matches "Requested/actual ratio 144/144, Frequency=4800, GearMode=1" (both logs)
@@ -239,9 +302,13 @@ def parse_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]:
         if line.upper().startswith("START_RMT"):
             capture_block = (not _has_task_markers) or in_task_window[i]
             block_index += 1
+            header_line: str | None = None
             i += 1
             while i < len(lines) and not lines[i].strip().startswith("Mc"):
+                if HEADER_PATTERN.match(lines[i].strip()):
+                    header_line = lines[i].strip()
                 i += 1
+            param_order = _header_param_order(header_line)
 
             while i < len(lines):
                 current = lines[i].strip()
@@ -267,9 +334,6 @@ def parse_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]:
 
                 rank = row_match.group(1)
                 values = [float(v) for v in FLOAT_PATTERN.findall(row_match.group(2))]
-                if len(values) < 2 * len(PARAMS):
-                    i += 1
-                    continue
 
                 record: dict[str, Any] = {
                     "SourceFile": source_name,
@@ -281,9 +345,9 @@ def parse_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]:
                     "RunTemp": ctx.run_temp,  # None when no temperature sweep in log
                 }
 
-                for idx, param in enumerate(PARAMS):
-                    record[f"{param}-"] = values[2 * idx]
-                    record[f"{param}+"] = values[2 * idx + 1]
+                if not _assign_param_values(record, values, param_order):
+                    i += 1
+                    continue
 
                 rows.append(record)
                 i += 1
@@ -348,15 +412,19 @@ def _normalize_dtr_temp(raw: float | None) -> float | None:
     return round(raw)
 
 
-def _parse_one_rmt_block(lines: list[str], start_idx: int) -> tuple[list[tuple[str, list[float]]], int]:
+def _parse_one_rmt_block(
+    lines: list[str], start_idx: int
+) -> tuple[list[tuple[str, list[float]]], int, list[str | None]]:
     """Parse a single ``START_RMT`` .. ``STOP_RMT`` block.
 
     ``start_idx`` must be the index of the ``START_RMT`` line. Returns
-    ``(ranks, next_idx)`` where ``ranks`` is a list of ``(rank_label, values)``
-    tuples and ``next_idx`` is the index just past the terminating
-    ``STOP_RMT`` (or where scanning stopped).
+    ``(ranks, next_idx, param_order)`` where ``ranks`` is a list of
+    ``(rank_label, values)`` tuples, ``next_idx`` is the index just past the
+    terminating ``STOP_RMT`` (or where scanning stopped) and ``param_order``
+    maps each value pair to its canonical parameter (from the header).
     """
     ranks: list[tuple[str, list[float]]] = []
+    header_line: str | None = None
     i = start_idx + 1
     while i < len(lines):
         cur = lines[i].strip()
@@ -365,13 +433,14 @@ def _parse_one_rmt_block(lines: list[str], start_idx: int) -> tuple[list[tuple[s
             break
         if cur.upper().startswith("START_RMT"):
             break
+        if header_line is None and HEADER_PATTERN.match(cur):
+            header_line = cur
         m = ROW_PATTERN.match(cur)
         if m:
             values = [float(v) for v in FLOAT_PATTERN.findall(m.group(2))]
-            if len(values) >= 2 * len(PARAMS):
-                ranks.append((m.group(1), values))
+            ranks.append((m.group(1), values))
         i += 1
-    return ranks, i
+    return ranks, i, _header_param_order(header_line)
 
 
 def _phy_temp_after(lines: list[str], idx: int, window: int = 30) -> float | None:
@@ -477,7 +546,7 @@ def parse_dtr_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]
     ):
         if start is None:
             continue
-        ranks, after = _parse_one_rmt_block(lines, start)
+        ranks, after, param_order = _parse_one_rmt_block(lines, start)
         phy = _phy_temp_after(lines, after)
         if is_boot:
             global_boot_temp = phy
@@ -492,10 +561,8 @@ def parse_dtr_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]
                 "BootTemp": None,  # filled below once the global boot temp is known
                 "RunTemp": run_temp,
             }
-            for idx, param in enumerate(PARAMS):
-                record[f"{param}-"] = values[2 * idx]
-                record[f"{param}+"] = values[2 * idx + 1]
-            rows.append(record)
+            if _assign_param_values(record, values, param_order):
+                rows.append(record)
 
     norm_boot = _normalize_dtr_temp(global_boot_temp)
     for r in rows:
@@ -621,6 +688,37 @@ def load_axis_config(path: Path | None) -> dict:
         return {}
 
 
+def _fmt_num(v: float) -> str:
+    """Render a number for JSL (drop a trailing .0)."""
+    f = float(v)
+    return str(int(f)) if f.is_integer() else str(f)
+
+
+def _default_ref(defs: dict | None, is_plus: bool) -> float:
+    """Default +Ref / -Ref from the axis JSON ``defaults`` (fallback +/-10)."""
+    key = "ref_line_plus" if is_plus else "ref_line_minus"
+    val = (defs or {}).get(key)
+    try:
+        mag = abs(float(val)) if val is not None else 10.0
+    except (TypeError, ValueError):
+        mag = 10.0
+    mag = int(mag) if mag.is_integer() else mag
+    return mag if is_plus else -mag
+
+
+def _param_ref(param: str, axis_config: dict | None, is_plus: bool) -> float:
+    """Per-parameter ref line, falling back to the default +Ref / -Ref."""
+    cfg = axis_config or {}
+    side = "plus" if is_plus else "minus"
+    ref = cfg.get("parameters", {}).get(param, {}).get(side, {}).get("ref_line")
+    if ref is not None:
+        try:
+            return float(ref)
+        except (TypeError, ValueError):
+            pass
+    return _default_ref(cfg.get("defaults"), is_plus)
+
+
 def _scale_box_dispatch(col_name: str, cfg: dict, defs: dict, is_plus: bool) -> list[str]:
     """Return JSL lines for one Dispatch(ScaleBox) block (no trailing comma)."""
     items: list[str] = []
@@ -630,7 +728,7 @@ def _scale_box_dispatch(col_name: str, cfg: dict, defs: dict, is_plus: bool) -> 
         items.append(f"Max( {cfg['max']} )")
     items.append(f"Inc( {cfg.get('inc', defs.get('inc', 5))} )")
     items.append(f"Minor Ticks( {cfg.get('minor_ticks', defs.get('minor_ticks', 0))} )")
-    ref = cfg.get("ref_line", 10 if is_plus else -10)
+    ref = cfg.get("ref_line", _default_ref(defs, is_plus))
     clr_key = "ref_line_plus_color" if is_plus else "ref_line_minus_color"
     clr = defs.get(clr_key, "Medium Light Red" if is_plus else "Blue")
     items.append(f'Add Ref Line( {ref}, "Solid", "{clr}", "", 1 )')
@@ -663,15 +761,17 @@ def _has_temp_data(rows: list[dict[str, Any]]) -> bool:
 
 
 def _compute_axis_range(
-    rows: list[dict[str, Any]] | None, param: str
+    rows: list[dict[str, Any]] | None, param: str, ref_mag: float = 10.0,
+    ref_mag_lo: float | None = None,
 ) -> tuple[float, float, float, float, int]:
     """Compute mirrored, shared Y-axis bounds for *param*+ and *param*-.
 
     Mirrors the reference .jrp layout where the + panel shows a positive
     magnitude band and the - panel shows the same band negated, so both
     panels share an identical magnitude span (e.g. +[5,40] / -[-40,-5]).
-    The shared band always includes the ±10 reference-line magnitude so the
-    pass/fail reference line stays visible on both panels.
+    The shared band always includes the reference-line magnitudes
+    (*ref_mag* and, for asymmetric +Ref / -Ref, *ref_mag_lo*; default 10)
+    so the pass/fail lines stay visible on both panels.
 
     Returns ``(plus_min, plus_max, minus_min, minus_max, inc)`` where:
       * ``plus_min``/``plus_max``   apply to the *param*+ panel.
@@ -679,7 +779,8 @@ def _compute_axis_range(
     """
     import math as _m
 
-    ref_mag = 10.0  # reference-line magnitude (±10), as in the reference .jrp
+    ref_mag = abs(float(ref_mag))
+    ref_lo = abs(float(ref_mag_lo)) if ref_mag_lo is not None else ref_mag
 
     plus_abs:  list[float] = []
     minus_abs: list[float] = []
@@ -701,9 +802,9 @@ def _compute_axis_range(
     if not all_abs:
         return 5.0, 40.0, -40.0, -5.0, 5
 
-    # Include the reference-line magnitude so it is always visible on the axis
-    abs_min = min(min(all_abs), ref_mag)
-    abs_max = max(max(all_abs), ref_mag)
+    # Include the reference-line magnitudes so they are always visible on the axis
+    abs_min = min(min(all_abs), ref_mag, ref_lo)
+    abs_max = max(max(all_abs), ref_mag, ref_lo)
     abs_rng = abs_max - abs_min
 
     # Choose a sensible Inc based on the magnitude span
@@ -753,6 +854,7 @@ def generate_jmp_jsl(
     chart_params: list[str],
     axis_config: dict | None = None,
     rows: list[dict[str, Any]] | None = None,
+    interactive: bool = False,
 ) -> Path:
     """Generate JMP JSL for the given CSV.
 
@@ -760,7 +862,8 @@ def generate_jmp_jsl(
       Group X  : BootTemp, RunTemp
       Y-axis   : dynamic Min/Max computed from actual data; common bounds for
                  param+ and param- so both panels share the same scale.
-      Ref lines: +10 (Orange) for + panel, -10 (Medium Dark Blue) for - panel.
+      Ref lines: per-parameter +Ref / -Ref from the axis config (falling back
+                 to the default +Ref / -Ref, then +/-10).
 
     Standard mode (no temperature sweep):
       Group X  : Frequency (side-by-side facets) with Gear colour overlay.
@@ -769,13 +872,18 @@ def generate_jmp_jsl(
     Multi data-set mode (concatenated CSVs with several ``SourceFile`` values):
       An ``Overlay( :SourceFile )`` is added so each merged source is drawn in
       a distinct colour, allowing the captures to be told apart.
+
+    Interactive mode (*interactive* = True) writes ``rmt_graph_builder.jsl``
+    which leaves every Graph Builder window open (no PNG export, no Quit) so
+    the engineer can fine-tune the charts in JMP and save a .jrp/.jsl.
     """
     import math as _m
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    jsl_path  = output_dir / "rmt_jmp_charts.jsl"
+    jsl_path  = output_dir / ("rmt_graph_builder.jsl" if interactive else "rmt_jmp_charts.jsl")
     image_dir = output_dir / "jmp_charts"
-    image_dir.mkdir(parents=True, exist_ok=True)
+    if not interactive:
+        image_dir.mkdir(parents=True, exist_ok=True)
 
     csv_jsl     = _escape_jsl_string(str(csv_path.resolve()))
     img_dir_jsl = _escape_jsl_string(str(image_dir.resolve()))
@@ -838,7 +946,13 @@ def generate_jmp_jsl(
 
         if temp_mode:
             # Mirrored, shared Y-axis bounds for + and - panels
-            p_min, p_max, m_min, m_max, inc = _compute_axis_range(rows, param)
+            ref_p = _param_ref(param, axis_config, is_plus=True)
+            ref_m = _param_ref(param, axis_config, is_plus=False)
+            p_min, p_max, m_min, m_max, inc = _compute_axis_range(
+                rows, param, ref_mag=max(abs(ref_p), abs(ref_m)),
+                ref_mag_lo=min(abs(ref_p), abs(ref_m)))
+            clr_p = cfg_defs.get("ref_line_plus_color", "Orange")
+            clr_m = cfg_defs.get("ref_line_minus_color", "Medium Dark Blue")
             _ovl = [f"            Overlay( :{overlay_col} )"] if overlay_col else []
             _grp_sep = "," if overlay_col else ""
             lines += [
@@ -863,7 +977,7 @@ def generate_jmp_jsl(
                 f"                ScaleBox,",
                 f"                {{Min( {p_min} ), Max( {p_max} ), Inc( {inc} ),",
                 f"                Minor Ticks( 0 ),",
-                f'                Add Ref Line( 10, "Solid", "Orange", "", 1 ),',
+                f'                Add Ref Line( {_fmt_num(ref_p)}, "Solid", "{clr_p}", "", 1 ),',
                 f"                Label Row( {{Show Major Grid( 1 ), Show Minor Grid( 1 )}} )}}",
                 f"            ),",
                 f"            Dispatch(",
@@ -872,7 +986,7 @@ def generate_jmp_jsl(
                 f"                ScaleBox,",
                 f"                {{Min( {m_min} ), Max( {m_max} ), Inc( {inc} ),",
                 f"                Minor Ticks( 0 ),",
-                f'                Add Ref Line( -10, "Solid", "Medium Dark Blue", "", 1 ),',
+                f'                Add Ref Line( {_fmt_num(ref_m)}, "Solid", "{clr_m}", "", 1 ),',
                 f"                Label Row( {{Show Major Grid( 1 ), Show Minor Grid( 1 )}} )}}",
                 f"            )",
                 f"        )",
@@ -936,15 +1050,27 @@ def generate_jmp_jsl(
     # here. Dashboard-style multi-parameter / multi-source analysis now lives
     # in the interactive HTML report (RMT_Report.html), which renders the same
     # information with selectable sources and parameters.
-    lines += [
-        "Close( dt, No Save );",
-        "",
-        f'Write("JMP chart export completed.\\!N");',
-        f'Write("Output folder: {img_dir_jsl}\\!N");',
-        "",
-        "// Auto-close JMP after all charts are saved",
-        "Quit();",
-    ]
+    if interactive:
+        lines = [
+            ln for ln in lines
+            if "Save Picture(" not in ln
+        ]
+        lines = [ln.replace("gb << Close Window;)", ")") for ln in lines]
+        lines += [
+            "",
+            'Write("Graph Builder windows are open for interactive tuning. '
+            'Use File > Save Script / Save As .jrp, then Load .jrp in MarginIQ.\\!N");',
+        ]
+    else:
+        lines += [
+            "Close( dt, No Save );",
+            "",
+            f'Write("JMP chart export completed.\\!N");',
+            f'Write("Output folder: {img_dir_jsl}\\!N");',
+            "",
+            "// Auto-close JMP after all charts are saved",
+            "Quit();",
+        ]
 
     jsl_path.write_text("\n".join(lines), encoding="utf-8")
     return jsl_path
@@ -1690,38 +1816,301 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Mode Register / ODT extraction
+# ---------------------------------------------------------------------------
+# Final per-rank MR table printed during "SAGV Finalization":
+#   MC0.C0.R0	Data	Delay (nCK)
+#    MR 34:		0x14	 12
+_MR_TABLE_HDR = re.compile(r"^(MC\d+\.C\d+\.R\d+)\s+Data\s+Delay", re.IGNORECASE)
+_MR_TABLE_ROW = re.compile(r"^MR\s*(\d+)\s*:\s+0x([0-9A-Fa-f]+)")
+# JEDEC-reset MR writes: " MC0 C0 R0 MrAddr =  34 MrIndex = 31 Value = 0x24 ..."
+_MR_INIT_START = re.compile(r"^InitMrwDdr5\s*:", re.IGNORECASE)
+_MR_INIT_ROW = re.compile(
+    r"^MC(\d+)\s+C(\d+)\s+R(\d+)\s+MrAddr\s*=\s*(\d+)\s+MrIndex\s*=\s*\d+\s+"
+    r"Value\s*=\s*0x([0-9A-Fa-f]+)",
+    re.IGNORECASE,
+)
+_ODT_SUM_START = re.compile(r"^DIMM\s+ODT\s+summary", re.IGNORECASE)
+_ODT_SUM_ROW = re.compile(r"^(Mc\d+C\d+D\d+)\s*:\s*(.+)$")
+_CPU_RD_ODT = re.compile(
+    r"CPU\s+Summary:\s*MC\s*=\s*(\d+)\s+Channel\s*=\s*(\d+)\s+Read\s+ODT\s*=\s*(\d+)",
+    re.IGNORECASE,
+)
+_ODTL_ROW = re.compile(r"^(Mc\d+)\.Ch(\d+)\.(R\d+)\s*:\s*((?:Ddr5\w+\s*:\s*-?\d+\s*)+)$")
+_ODTL_KV = re.compile(r"Ddr5(\w+?)\s*:\s*(-?\d+)")
+_ODT_INPUT_HDR = re.compile(r"^(Dimm\d+)\s+ODT\s+Values\s*:", re.IGNORECASE)
+_ODT_INPUT_ROW = re.compile(r"^([A-Za-z][\w ]*?)\s*:\s*(\S.*)$")
+_RCOMP_RDODT = re.compile(r"RcompTarget\[RdOdt\]\s*:\s*(\d+)")
+_DDRIO_ODT_MODE = re.compile(r"DDRIO\s+ODT\s+Mode\s*:\s*(\S+)", re.IGNORECASE)
+_PRE_TRAINING_START = re.compile(r"MRC\s+task\s+--\s+Pre-Training\s+--\s+Started", re.IGNORECASE)
+_ANY_TASK_START = re.compile(r"MRC\s+task\s+--\s+.+?\s+--\s+Started", re.IGNORECASE)
+
+
+def _new_mr_snapshot(index: int) -> dict[str, Any]:
+    return {
+        "index": index, "frequency": None, "gear": None,
+        "final_mrs": {}, "init_mrs": {},
+        "odt_fields": [], "odt_summary": {}, "cpu_read_odt": {}, "odtl": {},
+    }
+
+
+def parse_mr_odt_info(text: str, source_name: str) -> dict[str, Any]:
+    """Extract DDR5 Mode Register and ODT settings from an MRC log.
+
+    Returns ``{"source_file", "odt_inputs", "rcomp_rd_odt", "ddrio_odt_mode",
+    "snapshots": [...]}``. One snapshot is produced per MRC training pass
+    (split at "Pre-Training -- Started") and holds:
+
+      * ``final_mrs``   — rank -> {MR: value}, from the SAGV Finalization table
+      * ``init_mrs``    — rank -> {MR: value}, from InitMrwDdr5 (JEDEC reset)
+      * ``odt_fields`` / ``odt_summary`` — "DIMM ODT summary" (Ohm)
+      * ``cpu_read_odt`` — "Mc0.C0" -> CPU read ODT (Ohm)
+      * ``odtl``        — rank -> ODT latency offsets (DDR5 ODT Timing Config)
+
+    Rank labels are normalised to the RMT style (``Mc0.C0.R0``). Only
+    snapshots holding data are returned.
+    """
+    info: dict[str, Any] = {
+        "source_file": source_name,
+        "odt_inputs": {},
+        "rcomp_rd_odt": None,
+        "ddrio_odt_mode": None,
+        "snapshots": [],
+    }
+    snaps: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    freq: int | None = None
+    gear: int | None = None
+
+    mode: str | None = None          # "init" | "mrtable" | "odtsum" | "odtin"
+    table_rank: str | None = None
+    odt_in_dimm: str | None = None
+    odt_hdr_pending = False
+
+    def _snap() -> dict[str, Any]:
+        nonlocal cur
+        if cur is None:
+            cur = _new_mr_snapshot(len(snaps) + 1)
+            snaps.append(cur)
+        return cur
+
+    def _tag(s: dict[str, Any]) -> None:
+        s["frequency"] = freq
+        s["gear"] = gear
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            if mode in ("odtin",):
+                mode = None
+            continue
+
+        fg = FREQ_GEAR_PATTERN.search(line)
+        if fg:
+            freq = int(fg.group(1))
+            gear = (int(fg.group(2)) + 1) * 2
+
+        if _PRE_TRAINING_START.search(line):
+            cur = _new_mr_snapshot(len(snaps) + 1)
+            snaps.append(cur)
+            mode = None
+            continue
+
+        # ── Continue an open multi-line section ──────────────────────
+        if mode == "mrtable":
+            m = _MR_TABLE_ROW.match(line)
+            if m and table_rank:
+                _snap()["final_mrs"].setdefault(table_rank, {})[int(m.group(1))] = int(m.group(2), 16)
+                continue
+            if line.startswith("->"):
+                continue
+            hdr = _MR_TABLE_HDR.match(line)
+            if hdr:
+                table_rank = "Mc" + hdr.group(1)[2:]
+                _tag(_snap())
+                continue
+            mode = None
+        elif mode == "init":
+            m = _MR_INIT_ROW.match(line)
+            if m:
+                rank = f"Mc{m.group(1)}.C{m.group(2)}.R{m.group(3)}"
+                _snap()["init_mrs"].setdefault(rank, {})[int(m.group(4))] = int(m.group(5), 16)
+                continue
+            if "MRC task" in line:
+                mode = None
+            else:
+                continue  # other prints (e.g. "Ddr5OdtTable...") inside the init block
+        elif mode == "odtsum":
+            s = _snap()
+            if odt_hdr_pending:
+                s["odt_fields"] = line.split()
+                odt_hdr_pending = False
+                continue
+            m = _ODT_SUM_ROW.match(line)
+            if m:
+                vals = m.group(2).split()
+                s["odt_summary"][m.group(1)] = {
+                    f: (int(v) if v.lstrip("-").isdigit() else v)
+                    for f, v in zip(s["odt_fields"], vals)
+                }
+                continue
+            m = _CPU_RD_ODT.search(line)
+            if m:
+                s["cpu_read_odt"][f"Mc{m.group(1)}.C{m.group(2)}"] = int(m.group(3))
+                continue
+            mode = None
+        elif mode == "odtin":
+            m = _ODT_INPUT_ROW.match(line)
+            if m and not _ODT_INPUT_HDR.match(line):
+                info["odt_inputs"].setdefault(odt_in_dimm, {})[m.group(1).strip()] = m.group(2).strip()
+                continue
+            mode = None
+
+        # ── Section starts / single-line facts ───────────────────────
+        hdr = _MR_TABLE_HDR.match(line)
+        if hdr:
+            mode = "mrtable"
+            table_rank = "Mc" + hdr.group(1)[2:]
+            _tag(_snap())
+            continue
+        if _MR_INIT_START.match(line):
+            mode = "init"
+            continue
+        if _ODT_SUM_START.match(line):
+            mode = "odtsum"
+            odt_hdr_pending = True
+            _tag(_snap())
+            continue
+        m = _ODT_INPUT_HDR.match(line)
+        if m:
+            odt_in_dimm = m.group(1)
+            if odt_in_dimm not in info["odt_inputs"]:
+                mode = "odtin"
+                info["odt_inputs"][odt_in_dimm] = {}
+            continue
+        m = _ODTL_ROW.match(line)
+        if m:
+            rank = f"{m.group(1)}.C{m.group(2)}.{m.group(3)}"
+            _snap()["odtl"][rank] = {k: int(v) for k, v in _ODTL_KV.findall(m.group(4))}
+            continue
+        m = _RCOMP_RDODT.search(line)
+        if m and int(m.group(1)) != 0:
+            info["rcomp_rd_odt"] = int(m.group(1))
+            continue
+        m = _DDRIO_ODT_MODE.search(line)
+        if m:
+            info["ddrio_odt_mode"] = m.group(1)
+
+    info["snapshots"] = [
+        s for s in snaps
+        if s["final_mrs"] or s["init_mrs"] or s["odt_summary"] or s["odtl"]
+    ]
+    for n, s in enumerate(info["snapshots"], start=1):
+        s["index"] = n
+    return info
+
+
+# ── JEDEC DDR5 (JESD79-5) Mode Register decoding ────────────────────────
+# MR5/MR34/MR35/MR37-39 decodes were cross-checked against MRC's own
+# "DIMM ODT summary" and "DDR5 ODT Timing Config" prints.
+_RTT_OHMS = {0: "Off", 1: "240", 2: "120", 3: "80", 4: "60", 5: "48", 6: "40", 7: "34"}
+_CA_ODT_OHMS = {0: "Off", 1: "480", 2: "240", 3: "120", 4: "80", 5: "60", 6: "RFU", 7: "40"}
+_RON_OHMS = {0: "34", 1: "40", 2: "48", 3: "RFU"}
+_ODTL_ON = {1: -4, 2: -3, 3: -2, 4: -1, 5: 0, 6: 1}
+_ODTL_OFF = {1: 4, 2: 3, 3: 2, 4: 1, 5: 0, 6: -1}
+
+MR_DESCRIPTIONS: dict[int, str] = {
+    0: "Burst Length & CAS Latency",
+    2: "Functional Modes",
+    3: "DQS Training",
+    4: "Refresh Settings",
+    5: "IO Settings (Ron)",
+    6: "tWR / tRTP",
+    8: "Preamble / Postamble",
+    10: "VrefDQ",
+    11: "VrefCA",
+    12: "VrefCS",
+    13: "tCCD_L",
+    32: "CK / CS ODT",
+    33: "CA ODT / DQS_RTT_PARK",
+    34: "RTT_PARK / RTT_WR",
+    35: "RTT_NOM_WR / RTT_NOM_RD",
+    36: "RTT Loopback",
+    37: "ODTL WR offsets",
+    38: "ODTL NT WR offsets",
+    39: "ODTL NT RD offsets",
+}
+
+
+def _ohm(code_map: dict[int, str], code: int) -> str:
+    v = code_map.get(code, "?")
+    return v if v in ("Off", "RFU", "?") else f"{v}\u03a9"
+
+
+def decode_ddr5_mr(mr: int, val: int) -> str:
+    """Human-readable decode of the DDR5 MRs relevant to margin debug.
+
+    Returns an empty string for MRs that are not decoded.
+    """
+    if mr == 0:
+        bl = {0: "BL16", 1: "BC8 OTF", 2: "BL32", 3: "BL32 OTF"}[val & 0x3]
+        return f"CL={22 + 2 * ((val >> 2) & 0x1F)}, {bl}"
+    if mr == 5:
+        txt = f"Ron PU={_ohm(_RON_OHMS, (val >> 1) & 0x3)}, PD={_ohm(_RON_OHMS, (val >> 6) & 0x3)}"
+        return txt + (", DQ output disabled" if val & 0x1 else "")
+    if mr in (10, 11, 12):
+        name = {10: "VrefDQ", 11: "VrefCA", 12: "VrefCS"}[mr]
+        code = val & 0x7F
+        if code > 0x7D:
+            return f"{name} code 0x{code:02X} (RFU)"
+        return f"{name}={97.5 - 0.5 * code:.1f}% VDDQ"
+    if mr == 32:
+        return f"CK ODT={_ohm(_CA_ODT_OHMS, val & 0x7)}, CS ODT={_ohm(_CA_ODT_OHMS, (val >> 3) & 0x7)}"
+    if mr == 33:
+        return f"CA ODT={_ohm(_CA_ODT_OHMS, val & 0x7)}, DQS_RTT_PARK={_ohm(_RTT_OHMS, (val >> 3) & 0x7)}"
+    if mr == 34:
+        return f"RTT_WR={_ohm(_RTT_OHMS, (val >> 3) & 0x7)}, RTT_PARK={_ohm(_RTT_OHMS, val & 0x7)}"
+    if mr == 35:
+        return f"RTT_NOM_WR={_ohm(_RTT_OHMS, val & 0x7)}, RTT_NOM_RD={_ohm(_RTT_OHMS, (val >> 3) & 0x7)}"
+    if mr == 36:
+        return f"RTT_LOOPBACK={_ohm(_RTT_OHMS, val & 0x7)}"
+    if mr in (37, 38, 39):
+        on = _ODTL_ON.get(val & 0x7)
+        off = _ODTL_OFF.get((val >> 3) & 0x7)
+        on_s = f"{on:+d}" if on is not None else "RFU"
+        off_s = f"{off:+d}" if off is not None else "RFU"
+        return f"ODTL on {on_s} / off {off_s} tCK"
+    return ""
+
+
+def _mr_description(mr: int) -> str:
+    if mr in MR_DESCRIPTIONS:
+        return MR_DESCRIPTIONS[mr]
+    if 128 <= mr <= 255:
+        return "Per-DQ settings"
+    if mr >= 256:
+        return "Extended / vendor"
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Statistics helpers (shared by professional PPT and HTML report)
 # ---------------------------------------------------------------------------
 
 def _get_threshold(param: str, axis_config: dict | None) -> float:
-    """Return the positive reference-line threshold for *param* (default 10)."""
-    if axis_config:
-        ref = (
-            axis_config.get("parameters", {})
-                       .get(param, {})
-                       .get("plus", {})
-                       .get("ref_line")
-        )
-        if ref is not None:
-            return abs(float(ref))
-    return 10.0
+    """Return the positive reference-line threshold for *param*.
+
+    Uses the per-parameter +Ref, then the default +Ref, then 10."""
+    return abs(float(_param_ref(param, axis_config, is_plus=True)))
 
 
 def _get_threshold_minus(param: str, axis_config: dict | None) -> float:
-    """Return the negative reference-line threshold for *param* (default -10).
+    """Return the negative reference-line threshold for *param*.
 
-    Used to flag raw values whose negative margin is weaker than the configured
-    -Ref (i.e. the value lies above -Ref, closer to 0)."""
-    if axis_config:
-        ref = (
-            axis_config.get("parameters", {})
-                       .get(param, {})
-                       .get("minus", {})
-                       .get("ref_line")
-        )
-        if ref is not None:
-            return -abs(float(ref))
-    return -10.0
+    Uses the per-parameter -Ref, then the default -Ref, then -10. Used to
+    flag raw values whose negative margin is weaker than the configured -Ref
+    (i.e. the value lies above -Ref, closer to 0)."""
+    return -abs(float(_param_ref(param, axis_config, is_plus=False)))
 
 
 def _margin_status(avg_width: float, threshold: float) -> str:
@@ -1891,20 +2280,25 @@ def build_ppt_professional(
     bg_sh = s1.shapes.add_shape(_RECT, 0, 0, prs.slide_width, prs.slide_height)
     bg_sh.fill.solid(); bg_sh.fill.fore_color.rgb = NAVY; bg_sh.line.fill.background()
 
-    tb = s1.shapes.add_textbox(Inches(0.9), Inches(1.8), Inches(11.5), Inches(1.6))
+    tb = s1.shapes.add_textbox(Inches(0.9), Inches(1.5), Inches(11.5), Inches(1.9))
     p = tb.text_frame.paragraphs[0]
-    r = p.add_run(); r.text = "RMT Margin Summary Report"
+    r = p.add_run(); r.text = f"{TOOL_NAME} \u2014 RMT Margin Summary Report"
     r.font.size = Pt(36); r.font.bold = True; r.font.color.rgb = WHITE
+    p_sub = tb.text_frame.add_paragraph()
+    r = p_sub.add_run(); r.text = TOOL_SUBTITLE
+    r.font.size = Pt(16); r.font.color.rgb = ACCENT
 
     acc = s1.shapes.add_shape(_RECT, Inches(0.9), Inches(3.5), Inches(4.8), Inches(0.06))
     acc.fill.solid(); acc.fill.fore_color.rgb = BLUE; acc.line.fill.background()
 
     meta_tb = s1.shapes.add_textbox(Inches(0.9), Inches(3.75), Inches(11.5), Inches(2.5))
     mlines = [
+        f"Project     : {_ACTIVE_PROJECT_NAME or 'N/A'}",
         f"Generated   : {generated}",
         f"Source files: {len(files)}",
         f"Frequencies : {freq_disp}",
         f"Total rows  : {len(rows)}",
+        f"Tool        : {TOOL_NAME} {TOOL_VERSION}",
     ]
     for i, line in enumerate(mlines):
         para = (meta_tb.text_frame.paragraphs[0]
@@ -2493,70 +2887,396 @@ def _build_platform_html_section(platform_infos: list[dict] | None) -> list[str]
     return parts
 
 
-def _embed_jmp_charts_html(jmp_charts_dir: Path) -> list[str]:
+def _embed_jmp_charts_html(jmp_charts_dir: Path, ref_note: str = "per-parameter &plusmn;Ref") -> list[str]:
     """Return HTML parts for the JMP Charts tab with base64-embedded PNGs.
 
-    Layout (industry-standard engineering report format):
-      - KPI bar: total chart count
-      - Per-parameter scatter grid (2 columns) — one card per parameter
-    Each PNG is base64-encoded so the HTML remains fully self-contained.
-
-    The aggregated "RMT Dashboard" PNG is no longer produced by JMP; that
-    multi-parameter / multi-source overview is now rendered interactively in
-    the HTML report's Overview tab.
+    Layout: a comparison workspace of chart panels. Every panel has a
+    dropdown listing all JMP charts, so any two (or more) charts can be put
+    side-by-side. Panels start pre-populated with the default one-chart-per-
+    panel layout (never blank); a column selector, "Add panel" and "Reset"
+    are provided. Each PNG is embedded exactly once (base64), keeping the
+    HTML self-contained.
     """
     import base64
 
     def _b64src(p: Path) -> str:
         return "data:image/png;base64," + base64.b64encode(p.read_bytes()).decode("ascii")
 
-    parts: list[str] = []
+    charts: list[tuple[str, Path]] = [
+        (param, jmp_charts_dir / f"{param}.png")
+        for param in PARAMS
+        if (jmp_charts_dir / f"{param}.png").exists()
+    ]
+    known = {p.name for _, p in charts}
+    charts += [(p.stem, p) for p in sorted(jmp_charts_dir.glob("*.png")) if p.name not in known]
 
-    param_pngs     = [(param, jmp_charts_dir / f"{param}.png")
-                      for param in PARAMS
-                      if (jmp_charts_dir / f"{param}.png").exists()]
-    total_charts   = len(param_pngs)
-
-    if total_charts == 0:
+    if not charts:
         return ['<div class="alert alert-info m-4">No JMP chart images found in output folder.</div>']
 
-    # ── KPI bar ──────────────────────────────────────────────────
-    parts += [
-        '<div class="d-flex align-items-center gap-3 mb-4 px-1">',
+    names = [_html.escape(n) for n, _ in charts]
+    options = "".join(f'<option value="{n}">{n}</option>' for n in names)
+
+    parts: list[str] = [
+        '<div class="d-flex align-items-center gap-3 mb-3 px-1 flex-wrap">',
         f'<span class="badge rounded-pill text-bg-primary fs-6 px-3 py-2">'
-        f'&#x1F4CA; {total_charts} JMP Charts</span>',
+        f'&#x1F4CA; {len(charts)} JMP Charts</span>',
         '<span class="text-muted small">Generated by JMP Graph Builder &mdash; '
-        'X: Rank (Params) &nbsp;|&nbsp; Group: Frequency &nbsp;|&nbsp; '
-        'Overlay: Gear &nbsp;|&nbsp; Ref lines: &plusmn;10</span>',
+        'X: Rank (Params) &nbsp;|&nbsp; Group: Frequency (or Boot/Run temperature for DTR) '
+        f'&nbsp;|&nbsp; Overlay: Gear / Source &nbsp;|&nbsp; Ref lines: {ref_note}</span>',
+        '</div>',
+        '<div class="section-card">',
+        '<div class="d-flex align-items-center flex-wrap gap-2 mb-2">',
+        '<h5 class="fw-bold mb-0 me-auto">&#x1F50D; Per-Parameter Margin Charts &mdash; Comparison</h5>',
+        '<label class="small fw-semibold" for="jmpCols">Panels per row</label>',
+        '<select id="jmpCols" class="form-select form-select-sm w-auto" onchange="jmpSetCols(this.value)">'
+        '<option value="1">1</option><option value="2" selected>2</option>'
+        '<option value="3">3</option></select>',
+        '<button class="btn btn-sm btn-outline-primary" onclick="jmpAddPanel()">&#x2795; Add panel</button>',
+        '<button class="btn btn-sm btn-outline-secondary" onclick="jmpReset()">&#x21BA; Reset to default</button>',
+        '</div>',
+        '<p class="text-muted small mb-3">Pick any chart in each panel&rsquo;s dropdown to compare '
+        'parameters side-by-side. Each chart shows positive (+) and negative (&minus;) '
+        'training margins per DIMM rank; reference lines mark the minimum acceptable margin.</p>',
+        '<div class="row g-3" id="jmpGrid">',
+    ]
+    for idx, ((name, png_path), esc) in enumerate(zip(charts, names)):
+        sel_opts = options.replace(f'value="{esc}"', f'value="{esc}" selected', 1)
+        parts += [
+            f'<div class="col-xl-6 jmp-slot" data-default="{esc}">',
+            '<div class="border rounded p-2 bg-light h-100">',
+            '<div class="d-flex align-items-center gap-2 mb-1">',
+            f'<select class="form-select form-select-sm jmp-sel" aria-label="Chart for panel {idx + 1}" '
+            f'onchange="jmpShow(this)">{sel_opts}</select>',
+            '<button class="btn btn-sm btn-outline-danger" title="Remove panel" '
+            'onclick="jmpRemove(this)">&times;</button>',
+            '</div>',
+            f'<img src="{_b64src(png_path)}" data-chart="{esc}" class="img-fluid rounded jmp-img" '
+            f'style="width:100%;border:1px solid #dee2e6;" alt="JMP Chart: {esc}">',
+            '</div></div>',
+        ]
+    parts += ['</div>', '</div>']
+    return parts
+
+
+def _mr_odt_snapshots(platform_infos: list[dict] | None) -> list[tuple[str, dict, dict]]:
+    """Flatten ``platform_infos[*]["mr_odt"]["snapshots"]`` into
+    ``(label, file_info, snapshot)`` tuples with integer MR keys."""
+    out: list[tuple[str, dict, dict]] = []
+    for pi in platform_infos or []:
+        mo = pi.get("mr_odt") or {}
+        snaps = mo.get("snapshots") or []
+        for s in snaps:
+            s = dict(s)
+            for key in ("final_mrs", "init_mrs"):
+                s[key] = {
+                    rank: {int(mr): int(v) for mr, v in (mrs or {}).items()}
+                    for rank, mrs in (s.get(key) or {}).items()
+                }
+            label = str(pi.get("source_file") or mo.get("source_file") or "?")
+            if len(snaps) > 1:
+                fg = ""
+                if s.get("frequency"):
+                    fg = f" {s['frequency']}" + (f" G{s['gear']}" if s.get("gear") else "")
+                label += f" \u2014 training pass {s.get('index')}{fg}"
+            out.append((label, mo, s))
+    return out
+
+
+def _rank_sort_key(rank: str) -> list[int]:
+    return [int(x) for x in re.findall(r"\d+", rank)]
+
+
+def _snap_selector(prefix: str, labels: list[str]) -> str:
+    opts = "".join(
+        f'<option value="{i}">{_html.escape(lbl)}</option>' for i, lbl in enumerate(labels))
+    return (
+        f'<label class="small fw-semibold" for="{prefix}Sel">Log:</label>'
+        f'<select id="{prefix}Sel" class="form-select form-select-sm w-auto" style="max-width:520px" '
+        f'onchange="showSnap(\'{prefix}\', this.value)">{opts}</select>'
+    )
+
+
+def _build_mr_html_section(platform_infos: list[dict] | None) -> list[str]:
+    """HTML for the Mode Registers tab (final per-rank MR values)."""
+    snaps = _mr_odt_snapshots(platform_infos)
+    if not snaps:
+        return ['<div class="alert alert-info m-4">No Mode Register data found. The logs '
+                'need the MRC "SAGV Finalization" per-rank MR table or the "InitMrwDdr5" '
+                'JEDEC-reset writes.</div>']
+
+    parts: list[str] = [
+        '<div class="section-card">',
+        '<h5 class="fw-bold mb-1">&#x1F9EE; DDR5 Mode Registers &mdash; final trained values per rank</h5>',
+        '<p class="text-muted small mb-2">Final values come from the per-rank MR table MRC prints '
+        'during <b>SAGV Finalization</b>; JEDEC-reset values come from <b>InitMrwDdr5</b>. '
+        '<span class="mr-chg px-1">Amber</span> cells were changed by training (hover a cell for the '
+        'reset value and decode); <b>bold</b> rows differ between ranks. Decodes follow JEDEC '
+        'JESD79-5 &mdash; MR5 / MR34 / MR35 / MR37&ndash;39 are cross-checked against MRC&rsquo;s own '
+        'DIMM ODT summary and ODT timing prints.</p>',
+        '<div class="d-flex align-items-center flex-wrap gap-3 mb-3">',
+        _snap_selector("mr", [s[0] for s in snaps]),
+        '<div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" '
+        'id="mrChgOnly" onchange="filterMr()"><label class="form-check-label small" for="mrChgOnly">'
+        'Only MRs changed by training</label></div>',
+        '<div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" '
+        'id="mrVarOnly" onchange="filterMr()"><label class="form-check-label small" for="mrVarOnly">'
+        'Only MRs that differ between ranks</label></div>',
+        '<div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" '
+        'id="mrDecOnly" onchange="filterMr()"><label class="form-check-label small" for="mrDecOnly">'
+        'Only decoded MRs (CL / Ron / Vref / ODT)</label></div>',
         '</div>',
     ]
 
-    # ── Per-parameter scatter grid ────────────────────────────────
-    if param_pngs:
+    for k, (label, _mo, s) in enumerate(snaps):
+        final, init = s["final_mrs"], s["init_mrs"]
+        use_final = bool(final)
+        table = final if use_final else init
+        ranks = sorted(table, key=_rank_sort_key)
+        mrs = sorted({mr for r in ranks for mr in table[r]})
+        parts.append(f'<div class="mr-snap" id="mr-snap-{k}" style="display:{"block" if k == 0 else "none"}">')
+        if not use_final:
+            parts.append('<div class="alert alert-warning py-2 small">This log has no final '
+                         '(SAGV Finalization) MR table &mdash; showing JEDEC-reset '
+                         '(InitMrwDdr5) values.</div>')
+        parts += [
+            '<div class="table-responsive" style="max-height:620px">',
+            '<table class="table table-sm table-bordered align-middle mr-table mb-0" style="font-size:.8rem">',
+            '<thead class="table-dark" style="position:sticky;top:0"><tr><th>MR</th><th>Function</th>'
+            '<th>Decoded</th>',
+            *[f'<th class="text-center">{_html.escape(r)}</th>' for r in ranks],
+            '</tr></thead><tbody>',
+        ]
+        for mr in mrs:
+            vals = [table[r].get(mr) for r in ranks]
+            distinct = {v for v in vals if v is not None}
+            varies = len(distinct) > 1
+            decoded_any = False
+            changed_any = False
+            cells: list[str] = []
+            for r, v in zip(ranks, vals):
+                if v is None:
+                    cells.append('<td class="text-center text-muted">&mdash;</td>')
+                    continue
+                dec = decode_ddr5_mr(mr, v)
+                decoded_any = decoded_any or bool(dec)
+                iv = init.get(r, {}).get(mr) if use_final else None
+                changed = use_final and iv is not None and iv != v
+                changed_any = changed_any or changed
+                tip = f"{r} MR{mr} = 0x{v:02X}"
+                if iv is not None and use_final:
+                    tip += f" | JEDEC reset 0x{iv:02X}"
+                if dec:
+                    tip += f" | {dec}"
+                cls = ' class="text-center mr-chg"' if changed else ' class="text-center"'
+                cells.append(f'<td{cls} title="{_html.escape(tip)}"><code>0x{v:02X}</code></td>')
+            if len(distinct) == 1:
+                decoded = decode_ddr5_mr(mr, next(iter(distinct)))
+            elif decoded_any:
+                decoded = "varies by rank (hover cells)"
+            else:
+                decoded = ""
+            row_style = ' style="font-weight:700"' if varies else ""
+            parts.append(
+                f'<tr data-chg="{int(changed_any)}" data-var="{int(varies)}" data-dec="{int(decoded_any)}"{row_style}>'
+                f'<td class="fw-semibold">MR{mr}</td><td class="small">{_html.escape(_mr_description(mr))}</td>'
+                f'<td class="small" style="min-width:180px">{_html.escape(decoded)}</td>'
+                + "".join(cells)
+                + '</tr>'
+            )
+        parts += ['</tbody></table></div>', '</div>']
+    parts.append('</div>')
+
+    # ── Cross-log comparison: MRs whose final value differs between logs ──
+    if len(snaps) > 1:
+        per_snap: list[dict[int, str]] = []
+        for _label, _mo, s in snaps:
+            table = s["final_mrs"] or s["init_mrs"]
+            vals: dict[int, set[int]] = defaultdict(set)
+            for r in table:
+                for mr, v in table[r].items():
+                    vals[mr].add(v)
+            per_snap.append({mr: "/".join(f"0x{v:02X}" for v in sorted(vs)) for mr, vs in vals.items()})
+        all_mrs = sorted({mr for d in per_snap for mr in d})
+        diff_mrs = [mr for mr in all_mrs if len({d.get(mr) for d in per_snap}) > 1]
         parts += [
             '<div class="section-card">',
-            '<h5 class="fw-bold mb-1">&#x1F50D; Per-Parameter Margin Charts</h5>',
-            '<p class="text-muted small mb-3">Each chart shows positive (+) and negative (&minus;) '
-            'training margins per DIMM rank. Points are faceted by memory frequency and '
-            'color-coded by gear mode (Gear&nbsp;2&nbsp;/&nbsp;4). '
-            'Dashed reference lines at &plusmn;10 mark the minimum acceptable margin.</p>',
-            '<div class="row g-3">',
+            '<h5 class="fw-bold mb-1">&#x1F50E; Cross-Log MR Differences</h5>',
+            '<p class="text-muted small mb-3">MRs whose trained value differs between the loaded logs '
+            '(values across ranks shown as a / separated set). Useful to spot training decisions that '
+            'change with frequency, gear or temperature.</p>',
         ]
-        for param, png_path in param_pngs:
+        if not diff_mrs:
+            parts.append(f'<div class="alert alert-success py-2 mb-0">All {len(snaps)} logs have '
+                         'identical Mode Register values.</div>')
+        else:
             parts += [
-                '<div class="col-xl-6">',
-                '<div class="border rounded p-2 bg-light h-100">',
-                f'<div class="fw-semibold text-primary mb-1 ps-1" '
-                f'style="font-size:.88rem;letter-spacing:.02em;">'
-                f'&#x1F4CD; {param}</div>',
-                f'<img src="{_b64src(png_path)}" '
-                f'class="img-fluid rounded" '
-                f'style="width:100%;border:1px solid #dee2e6;" '
-                f'alt="JMP Chart: {param}">',
-                '</div></div>',
+                '<div class="table-responsive" style="max-height:520px">',
+                '<table class="table table-sm table-bordered table-hover mb-0" style="font-size:.78rem;white-space:nowrap">',
+                '<thead class="table-dark" style="position:sticky;top:0"><tr><th>Log</th>',
+                *[f'<th>MR{mr}<div class="small fw-normal">{_html.escape(_mr_description(mr))}</div></th>'
+                  for mr in diff_mrs],
+                '</tr></thead><tbody>',
             ]
-        parts += ['</div>', '</div>']  # row g-3, section-card
+            for (label, _mo, _s), d in zip(snaps, per_snap):
+                parts.append(f'<tr><td class="fw-semibold">{_html.escape(label)}</td>'
+                             + "".join(f'<td><code>{d.get(mr, "&mdash;")}</code></td>' for mr in diff_mrs)
+                             + '</tr>')
+            parts += ['</tbody></table></div>']
+        parts.append('</div>')
+    return parts
 
+
+def _rank_odt_from_mrs(mrs: dict[int, int]) -> dict[str, str]:
+    """Per-rank DRAM ODT / drive-strength values decoded from final MRs."""
+    out: dict[str, str] = {}
+    if 34 in mrs:
+        out["RTT_WR"] = _ohm(_RTT_OHMS, (mrs[34] >> 3) & 0x7)
+        out["RTT_PARK"] = _ohm(_RTT_OHMS, mrs[34] & 0x7)
+    if 35 in mrs:
+        out["RTT_NOM_WR"] = _ohm(_RTT_OHMS, mrs[35] & 0x7)
+        out["RTT_NOM_RD"] = _ohm(_RTT_OHMS, (mrs[35] >> 3) & 0x7)
+    if 36 in mrs:
+        out["RTT_LOOPBACK"] = _ohm(_RTT_OHMS, mrs[36] & 0x7)
+    if 33 in mrs:
+        out["DQS_RTT_PARK"] = _ohm(_RTT_OHMS, (mrs[33] >> 3) & 0x7)
+        out["CA_ODT"] = _ohm(_CA_ODT_OHMS, mrs[33] & 0x7)
+    if 32 in mrs:
+        out["CK_ODT"] = _ohm(_CA_ODT_OHMS, mrs[32] & 0x7)
+        out["CS_ODT"] = _ohm(_CA_ODT_OHMS, (mrs[32] >> 3) & 0x7)
+    if 5 in mrs:
+        out["Ron PU"] = _ohm(_RON_OHMS, (mrs[5] >> 1) & 0x3)
+        out["Ron PD"] = _ohm(_RON_OHMS, (mrs[5] >> 6) & 0x3)
+    return out
+
+
+def _simple_table(headers: list[str], rows: list[list[Any]], small: bool = True) -> str:
+    th = "".join(f"<th>{_html.escape(str(h))}</th>" for h in headers)
+    first = ' class="fw-semibold"'
+    body = "".join(
+        "<tr>" + "".join(
+            f'<td{first if j == 0 else ""}>{_html.escape(str(c))}</td>'
+            for j, c in enumerate(r)) + "</tr>"
+        for r in rows
+    )
+    fs = "font-size:.8rem;" if small else ""
+    return ('<div class="table-responsive"><table class="table table-sm table-bordered table-hover '
+            f'align-middle mb-3" style="{fs}white-space:nowrap"><thead class="table-dark"><tr>{th}</tr>'
+            f'</thead><tbody>{body}</tbody></table></div>')
+
+
+def _build_odt_html_section(platform_infos: list[dict] | None) -> list[str]:
+    """HTML for the ODT tab: DIMM ODT summary, CPU read ODT, per-rank DRAM
+    ODT decoded from final MRs, ODT latency timing and BIOS ODT inputs."""
+    snaps = _mr_odt_snapshots(platform_infos)
+    if not snaps:
+        return ['<div class="alert alert-info m-4">No ODT data found. The logs need the MRC '
+                '"MRC Data Summary" DIMM ODT summary, "DDR5 ODT Timing Config" or a final MR table.</div>']
+
+    parts: list[str] = [
+        '<div class="section-card">',
+        '<h5 class="fw-bold mb-1">&#x1F50C; On-Die Termination &amp; Drive Strength</h5>',
+        '<p class="text-muted small mb-2">All ODT values MRC reports for the selected log: DIMM ODT '
+        'summary (RTT_WR, RTT_NOM, RTT_PARK, CA/CS groups, Ron) and CPU read ODT from '
+        '<b>MRC Data Summary</b>, per-rank DRAM ODT decoded from the final MRs, ODT latency offsets '
+        'from <b>DDR5 ODT Timing Config</b>, and the BIOS ODT input overrides. Values in &Omega;.</p>',
+        '<div class="d-flex align-items-center flex-wrap gap-3 mb-3">',
+        _snap_selector("odt", [s[0] for s in snaps]),
+        '</div>',
+    ]
+    for k, (label, mo, s) in enumerate(snaps):
+        parts.append(f'<div class="odt-snap" id="odt-snap-{k}" style="display:{"block" if k == 0 else "none"}">')
+        any_data = False
+        if s.get("odt_summary"):
+            any_data = True
+            fields = s.get("odt_fields") or sorted({f for d in s["odt_summary"].values() for f in d})
+            rows = [[dimm] + [d.get(f, "") for f in fields]
+                    for dimm, d in sorted(s["odt_summary"].items(), key=lambda kv: _rank_sort_key(kv[0]))]
+            parts += ['<h6 class="fw-bold text-primary">DIMM ODT Summary (&Omega;)</h6>',
+                      _simple_table(["DIMM"] + fields, rows)]
+        if s.get("cpu_read_odt"):
+            any_data = True
+            rows = [[ch, v] for ch, v in sorted(s["cpu_read_odt"].items(), key=lambda kv: _rank_sort_key(kv[0]))]
+            parts += ['<h6 class="fw-bold text-primary">CPU Read ODT (&Omega;)</h6>',
+                      _simple_table(["MC.Channel", "Read ODT"], rows)]
+        final = s.get("final_mrs") or {}
+        rank_odt = {r: _rank_odt_from_mrs(m) for r, m in final.items()}
+        rank_odt = {r: d for r, d in rank_odt.items() if d}
+        if rank_odt:
+            any_data = True
+            cols = list(dict.fromkeys(c for d in rank_odt.values() for c in d))
+            rows = [[r] + [rank_odt[r].get(c, "") for c in cols]
+                    for r in sorted(rank_odt, key=_rank_sort_key)]
+            parts += ['<h6 class="fw-bold text-primary">Per-Rank DRAM ODT / Ron (decoded from final MRs)</h6>',
+                      _simple_table(["Rank"] + cols, rows)]
+        if s.get("odtl"):
+            any_data = True
+            cols = list(dict.fromkeys(c for d in s["odtl"].values() for c in d))
+            rows = [[r] + [s["odtl"][r].get(c, "") for c in cols]
+                    for r in sorted(s["odtl"], key=_rank_sort_key)]
+            parts += ['<h6 class="fw-bold text-primary">ODT Latency Offsets (tCK, DDR5 ODT Timing Config)</h6>',
+                      _simple_table(["Rank"] + cols, rows)]
+        inputs = mo.get("odt_inputs") or {}
+        facts = []
+        if mo.get("rcomp_rd_odt") is not None:
+            facts.append(("CPU RcompTarget[RdOdt]", f"{mo['rcomp_rd_odt']} \u03a9"))
+        if mo.get("ddrio_odt_mode"):
+            facts.append(("DDRIO ODT Mode", mo["ddrio_odt_mode"]))
+        if inputs or facts:
+            any_data = True
+            parts.append('<h6 class="fw-bold text-primary">BIOS / CPU ODT Inputs</h6>')
+            if facts:
+                parts.append('<div class="row g-2 mb-2">' + "".join(
+                    f'<div class="col-md-4 col-lg-3"><div class="border rounded p-2 bg-light">'
+                    f'<div class="small text-muted">{_html.escape(a)}</div>'
+                    f'<div class="fw-semibold">{_html.escape(str(b))}</div></div></div>'
+                    for a, b in facts) + '</div>')
+            if inputs:
+                fields = list(dict.fromkeys(f for d in inputs.values() for f in d))
+                rows = [[dimm] + [inputs[dimm].get(f, "") for f in fields] for dimm in sorted(inputs)]
+                parts += ['<div class="small text-muted mb-1">BIOS ODT overrides '
+                          '(&ldquo;Disabled&rdquo; = MRC auto / trained value is used).</div>',
+                          _simple_table(["DIMM"] + fields, rows)]
+        if not any_data:
+            parts.append('<div class="alert alert-warning py-2">No ODT prints found for this log.</div>')
+        parts.append('</div>')
+    parts.append('</div>')
+
+    # ── Cross-log ODT matrix ─────────────────────────────────────────────
+    with_sum = [(lbl, s) for lbl, _mo, s in snaps if s.get("odt_summary") or s.get("cpu_read_odt")]
+    if len(with_sum) > 1:
+        fields = list(dict.fromkeys(
+            f for _l, s in with_sum for f in (s.get("odt_fields") or [])))
+        matrix: list[list[str]] = []
+        for lbl, s in with_sum:
+            row = [lbl]
+            for f in fields:
+                vs = sorted({str(d.get(f)) for d in s.get("odt_summary", {}).values() if d.get(f) is not None},
+                            key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else 0, x))
+                row.append("/".join(vs) or "\u2014")
+            cpu = sorted({str(v) for v in s.get("cpu_read_odt", {}).values()})
+            row.append("/".join(cpu) or "\u2014")
+            matrix.append(row)
+        headers = ["Log"] + fields + ["CPU RdODT"]
+        varies = [len({r[i] for r in matrix}) > 1 for i in range(len(headers))]
+        var_cls = ' class="odt-var"'
+        th = "".join(
+            f'<th{var_cls if varies[i] and i else ""}>{_html.escape(h)}</th>'
+            for i, h in enumerate(headers))
+        body = "".join(
+            "<tr>" + "".join(
+                f'<td class="{"fw-semibold" if i == 0 else ("odt-var-cell" if varies[i] else "")}">'
+                f'{_html.escape(c)}</td>' for i, c in enumerate(r)) + "</tr>"
+            for r in matrix)
+        parts += [
+            '<div class="section-card">',
+            '<h5 class="fw-bold mb-1">&#x1F50E; Cross-Log ODT Comparison</h5>',
+            '<p class="text-muted small mb-3">Trained ODT per log (values across DIMMs shown as a / '
+            'separated set). <span class="odt-var-cell px-1">Highlighted</span> columns differ between logs.</p>',
+            '<div class="table-responsive"><table class="table table-sm table-bordered table-hover mb-0" '
+            f'style="font-size:.8rem;white-space:nowrap"><thead class="table-dark"><tr>{th}</tr></thead>'
+            f'<tbody>{body}</tbody></table></div>',
+            '</div>',
+        ]
     return parts
 
 
@@ -2568,11 +3288,14 @@ def generate_html_report(
     platform_infos: list[dict] | None = None,
     training_steps: list[dict] | None = None,
     jmp_charts_dir: Path | None = None,
+    project_name: str | None = None,
 ) -> None:
     """Generate a self-contained interactive HTML report (PowerBI-style)."""
     import json as _json
     import math as _math
     from datetime import datetime as _dt
+
+    project_name = project_name or _ACTIVE_PROJECT_NAME
 
     def _sf(v):
         """Return a JSON-safe float, or None for NaN/Inf/None."""
@@ -2599,6 +3322,12 @@ def generate_html_report(
             "minus": _get_threshold_minus(p, axis_config)}
         for p in chart_params
     }
+    _ref_pairs = {(thresholds_full[p]["plus"], thresholds_full[p]["minus"]) for p in chart_params}
+    if len(_ref_pairs) == 1:
+        _rp, _rm = next(iter(_ref_pairs))
+        ref_note = f"+{_fmt_num(_rp)} / {_fmt_num(_rm)}"
+    else:
+        ref_note = "per-parameter &plusmn;Ref (Tab 2 &middot; Parameters &amp; Axis)"
 
     n_pass = sum(1 for p in chart_params
                  if _margin_status(
@@ -2911,7 +3640,8 @@ def generate_html_report(
         "<head>",
         '<meta charset="UTF-8">',
         '<meta name="viewport" content="width=device-width,initial-scale=1">',
-        "<title>RMT Margin Analysis Report</title>",
+        f"<title>{TOOL_NAME} \u2014 RMT Margin Analysis Report"
+        + (f" \u2014 {_html.escape(project_name)}" if project_name else "") + "</title>",
         '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">',
         '<link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/dataTables.bootstrap5.min.css">',
         "<style>",
@@ -2934,13 +3664,23 @@ def generate_html_report(
         "td.weak-cell{background:#fee2e2!important;color:#b91c1c;font-weight:700;}",
         "tr.filter-row th{padding:4px!important;background:#1e3a8a;}",
         "tr.filter-row input,tr.filter-row select{font-size:.72rem;padding:2px 4px;min-width:60px;}",
+        ".rmt-hdr .brand-sub{font-size:1rem;opacity:.92;margin:0 0 6px;font-weight:500;}",
+        ".rmt-hdr .proj-badge{background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);"
+        "border-radius:999px;padding:3px 12px;font-size:.85rem;font-weight:600;margin-left:10px;vertical-align:middle;"
+        "display:inline-block;white-space:nowrap;}",
+        ".mr-chg{background:#fef3c7!important;}",
+        ".odt-var{background:#b45309!important;}",
+        ".odt-var-cell{background:#fef3c7;}",
         "</style>",
         "</head>",
         "<body>",
 
         # Header
         '<div class="rmt-hdr">',
-        '<h1>&#x1F4CA; RMT Margin Analysis Report</h1>',
+        f'<h1>&#x1F4CA; {TOOL_NAME} &mdash; RMT Margin Analysis Report'
+        + (f'<span class="proj-badge">{_html.escape(project_name)}</span>' if project_name else '')
+        + '</h1>',
+        f'<p class="brand-sub">{TOOL_SUBTITLE}</p>',
         f'<p>Generated: {generated} &nbsp;|&nbsp; Source files: {len(files)}'
         f' &nbsp;|&nbsp; Frequencies: {", ".join(freq_labels)}</p>',
         "</div>",
@@ -2973,6 +3713,8 @@ def generate_html_report(
         '<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#driftTab">&#x1F321; RunTemp</a></li>',
         '<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tsTab">&#x1F4CB; Training Steps</a></li>',
         '<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#platTab">&#x1F4BE; Platform</a></li>',
+        '<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#mrTab">&#x1F9EE; Mode Registers</a></li>',
+        '<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#odtTab">&#x1F50C; ODT</a></li>',
         *(
             ['<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#jmpTab">&#x1F4CA; JMP Charts</a></li>']
             if jmp_charts_dir and jmp_charts_dir.is_dir() and any(jmp_charts_dir.glob("*.png"))
@@ -3079,12 +3821,22 @@ def generate_html_report(
         *_build_platform_html_section(platform_infos),
         '</div>',
 
+        # ── Mode Registers tab ──
+        '<div class="tab-pane fade" id="mrTab">',
+        *_build_mr_html_section(platform_infos),
+        '</div>',
+
+        # ── ODT tab ──
+        '<div class="tab-pane fade" id="odtTab">',
+        *_build_odt_html_section(platform_infos),
+        '</div>',
+
         # ── JMP Charts tab (populated only when PNG images are present) ──
         *(
             [
                 '<div class="tab-pane fade" id="jmpTab">',
                 '<div class="container-fluid px-3 py-3">',
-                *_embed_jmp_charts_html(jmp_charts_dir),
+                *_embed_jmp_charts_html(jmp_charts_dir, ref_note),
                 '</div>',
                 '</div>',
             ]
@@ -3111,7 +3863,9 @@ def generate_html_report(
         "</div>",  # tab-content
         "</div>",  # container
 
-        '<div class="footer-bar">RMT Margin Analysis Report &mdash; Auto-generated by rmt_log_pipeline.py &mdash; ' + generated + "</div>",
+        f'<div class="footer-bar">{TOOL_NAME} {TOOL_VERSION} &mdash; {TOOL_SUBTITLE}'
+        + (f' &mdash; {_html.escape(project_name)}' if project_name else '')
+        + ' &mdash; ' + generated + "</div>",
 
         # CDN scripts
         '<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>',
@@ -3301,6 +4055,61 @@ $(()=>{
 });
 """,
         "</script>",
+        "<script>",
+        r"""
+function showSnap(prefix, idx){
+  document.querySelectorAll('.'+prefix+'-snap').forEach(d=>{d.style.display='none';});
+  const el=document.getElementById(prefix+'-snap-'+idx);
+  if(el){el.style.display='block';}
+  if(prefix==='mr'){filterMr();}
+}
+function filterMr(){
+  const chg=document.getElementById('mrChgOnly'), vr=document.getElementById('mrVarOnly'),
+        dec=document.getElementById('mrDecOnly');
+  document.querySelectorAll('.mr-table tbody tr').forEach(tr=>{
+    let show=true;
+    if(chg&&chg.checked&&tr.dataset.chg!=='1')show=false;
+    if(vr&&vr.checked&&tr.dataset.var!=='1')show=false;
+    if(dec&&dec.checked&&tr.dataset.dec!=='1')show=false;
+    tr.style.display=show?'':'none';
+  });
+}
+const JMPIMG={};
+document.querySelectorAll('.jmp-img').forEach(img=>{JMPIMG[img.dataset.chart]=img.src;});
+function jmpShow(sel){
+  const img=sel.closest('.jmp-slot').querySelector('.jmp-img');
+  if(JMPIMG[sel.value]){img.src=JMPIMG[sel.value];img.dataset.chart=sel.value;img.alt='JMP Chart: '+sel.value;}
+}
+function jmpColClass(n){return n==='1'?'col-12':(n==='3'?'col-xl-4':'col-xl-6');}
+function jmpSetCols(n){
+  document.querySelectorAll('#jmpGrid .jmp-slot').forEach(s=>{
+    s.classList.remove('col-12','col-xl-4','col-xl-6');s.classList.add(jmpColClass(n));
+  });
+}
+function jmpAddPanel(){
+  const grid=document.getElementById('jmpGrid');const first=grid&&grid.querySelector('.jmp-slot');
+  if(!first){return;}
+  const clone=first.cloneNode(true);clone.dataset.extra='1';clone.style.display='';
+  grid.appendChild(clone);jmpShow(clone.querySelector('.jmp-sel'));
+}
+function jmpRemove(btn){
+  const grid=document.getElementById('jmpGrid');
+  const visible=[...grid.querySelectorAll('.jmp-slot')].filter(s=>s.style.display!=='none');
+  if(visible.length<=1){return;}
+  const slot=btn.closest('.jmp-slot');
+  if(slot.dataset.extra==='1'){slot.remove();}else{slot.style.display='none';}
+}
+function jmpReset(){
+  const grid=document.getElementById('jmpGrid');
+  grid.querySelectorAll('.jmp-slot[data-extra="1"]').forEach(s=>s.remove());
+  grid.querySelectorAll('.jmp-slot').forEach(s=>{
+    s.style.display='';
+    const sel=s.querySelector('.jmp-sel');sel.value=s.dataset.default;jmpShow(sel);
+  });
+  const cols=document.getElementById('jmpCols');if(cols){cols.value='2';jmpSetCols('2');}
+}
+""",
+        "</script>",
         "</body>",
         "</html>",
     ]
@@ -3312,7 +4121,20 @@ $(()=>{
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Extract RMT data from TXT logs")
+    parser = argparse.ArgumentParser(
+        description=f"{TOOL_NAME} {TOOL_VERSION} - {TOOL_SUBTITLE}: extract RMT data from MRC logs")
+    parser.add_argument(
+        "--version", action="version", version=f"{TOOL_NAME} {TOOL_VERSION}")
+    parser.add_argument(
+        "--project",
+        default=None,
+        help=(
+            "Project / platform the logs come from (key, code or name from "
+            "projects.json, e.g. NVL or WCL). Labels the reports and selects "
+            "project-specific START_RMT header aliases. Defaults to the "
+            "registry default."
+        ),
+    )
     parser.add_argument(
         "--input",
         nargs="+",
@@ -3450,6 +4272,18 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+
+    _registry = load_projects()
+    _project_key = resolve_project_key(args.project, _registry)
+    if _project_key is None:
+        print(f"Unknown --project '{args.project}'. Known projects: "
+              f"{', '.join(_registry['projects'])} (see projects.json).")
+        return 2
+    set_param_aliases(project_param_aliases(_project_key, _registry))
+    project_name = project_label(_project_key, _registry)
+    global _ACTIVE_PROJECT_NAME
+    _ACTIVE_PROJECT_NAME = project_name
+    print(f"{TOOL_NAME} {TOOL_VERSION} | Project: {project_name}")
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -3767,9 +4601,15 @@ def main() -> int:
         all_rows.extend(rows)
         try:
             pinfo = parse_platform_info(text, file_path.name)
-            platform_infos.append(pinfo)
         except Exception as _pi_exc:
+            pinfo = None
             print(f"  [warn] platform info skipped for {file_path.name}: {_pi_exc}")
+        if pinfo is not None:
+            try:
+                pinfo["mr_odt"] = parse_mr_odt_info(text, file_path.name)
+            except Exception as _mr_exc:
+                print(f"  [warn] MR/ODT info skipped for {file_path.name}: {_mr_exc}")
+            platform_infos.append(pinfo)
         try:
             ts = parse_training_steps(text, file_path.name)
             all_training_steps.extend(ts)
@@ -3790,6 +4630,8 @@ def main() -> int:
     #    re-attach training steps and platform info to the final HTML ──
     import json as _json_meta
     _meta = {
+        "tool": f"{TOOL_NAME} {TOOL_VERSION}",
+        "project": _project_key,
         "training_steps": all_training_steps if all_training_steps else [],
         "platform_infos": platform_infos   if platform_infos   else [],
     }
