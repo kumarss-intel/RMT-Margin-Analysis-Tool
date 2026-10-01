@@ -289,7 +289,11 @@ In `--outdir`, the script creates:
 
 5. `RMT_Report.html`
 - Self-contained interactive report: Overview, Frequency, Parameters, RunTemp, Training Steps,
-  Platform, **Mode Registers**, **ODT**, **JMP Charts** (dropdown comparison panels) and Raw Data.
+  Platform, **Mode Registers**, **ODT**, **JMP Charts** (dropdown comparison panels) and **Raw Data**
+  (frozen-column explorer with PASS/WARN/FAIL status, heatmap, numeric filters `<15` / `10..20`,
+  Margins / Window width / Slack-vs-Ref views, Copy / CSV export, and an A → B **Δ Drift
+  Comparison**, e.g. Boot → Run RMT, BCRH vs BHRC or 4800 vs 5200).
+  The report needs no jQuery / DataTables; only Bootstrap and Chart.js are loaded from the CDN.
 
 6. `rmt_metadata.json`
 - Tool version, project, training steps, platform info and MR / ODT data

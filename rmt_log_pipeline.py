@@ -3449,11 +3449,57 @@ def generate_html_report(
 
     # Raw table rows (all fields)
     raw_table_rows = []
+    _is_dtr = any(r.get("RunTemp") not in (None, "") for r in rows)
+    _file_blocks: dict[str, set] = defaultdict(set)
     for r in rows:
+        _file_blocks[str(r.get("SourceFile", ""))].add(str(r.get("BlockIndex", "")))
+
+    def _blk(r) -> int | None:
+        try:
+            return int(float(r.get("BlockIndex")))
+        except (TypeError, ValueError):
+            return None
+
+    def _phase(r) -> str:
+        b = _blk(r)
+        if _is_dtr:
+            return {1: "Boot RMT", 2: "Run RMT"}.get(b, f"Blk {b}" if b is not None else "RMT")
+        if len(_file_blocks[str(r.get("SourceFile", ""))]) > 1 and b is not None:
+            return f"Blk {b}"
+        return "RMT"
+
+    # Short, unique per-file labels (e.g. "BCRH 3200 G2") — full name on hover.
+    _file_label: dict[str, str] = {}
+    _file_group: dict[str, str] = {}
+    for r in rows:
+        f = str(r.get("SourceFile", ""))
+        if f in _file_label:
+            continue
+        stem = Path(f).stem
+        grp = re.split(r"[_\-\s]+", stem)[0] or stem
+        fq, gr = r.get("Frequency"), r.get("Gear")
+        if fq not in (None, "") and str(fq) in stem:
+            lbl = f"{grp} {fq}" + (f" G{gr}" if gr not in (None, "") else "")
+        else:
+            lbl = stem if len(stem) <= 24 else stem[:11] + "\u2026" + stem[-11:]
+        _file_label[f] = lbl
+        _file_group[f] = grp
+    _seen_lbl: dict[str, int] = {}
+    for f in list(_file_label):
+        lbl = _file_label[f]
+        if list(_file_label.values()).count(lbl) > 1:
+            _seen_lbl[lbl] = _seen_lbl.get(lbl, 0) + 1
+            _file_label[f] = f"{lbl} ({_seen_lbl[lbl]})"
+
+    for r in rows:
+        f = str(r.get("SourceFile", ""))
         rd: dict = {
-            "file": str(r.get("SourceFile", ""))[-35:],
-            "freq": str(r.get("Frequency", "")),
-            "gear": str(r.get("Gear", "")),
+            "file": f,
+            "lbl":  _file_label.get(f, f),
+            "grp":  _file_group.get(f, f),
+            "phase": _phase(r),
+            "freq": str(r.get("Frequency", "") if r.get("Frequency") is not None else ""),
+            "gear": str(r.get("Gear", "") if r.get("Gear") is not None else ""),
             "rank": str(r.get("Params", "")),
             "bt":   _sf(r.get("BootTemp")),
             "rt":   _sf(r.get("RunTemp")),
@@ -3462,6 +3508,13 @@ def generate_html_report(
             rd[p + "+"] = _sf(r.get(p + "+"))
             rd[p + "-"] = _sf(r.get(p + "-"))
         raw_table_rows.append(rd)
+
+    # Parameters whose margins never change (e.g. RecEnDelay ±32) are hidden
+    # by default in the Raw Data tab — they add columns but no information.
+    raw_constant_params = [
+        p for p in chart_params
+        if len({(rd.get(p + "+"), rd.get(p + "-")) for rd in raw_table_rows}) <= 1
+    ]
 
     # ── Margin degradation summary (values weaker than configured ±Ref) ──
     # For each parameter, count samples whose + margin falls below +Ref, or
@@ -3504,6 +3557,10 @@ def generate_html_report(
         "thresholds":      thresholds_full,
     }, separators=(",", ":"))
     raw_data_json = _json.dumps(raw_table_rows, separators=(",", ":"))
+    raw_meta_json = _json.dumps({
+        "dtr": _is_dtr,
+        "constant": raw_constant_params,
+    }, separators=(",", ":"))
 
     # ── Dynamic HTML snippets ─────────────────────────────────────────
     stats_table_rows = ""
@@ -3582,16 +3639,6 @@ def generate_html_report(
             '</tr></thead><tbody>' + _deg_rows_html + '</tbody></table></div>'
         )
 
-    raw_tbl_hdrs = (
-        '<th>File</th><th>Freq</th><th>Gear</th><th>Rank</th>'
-        '<th>BootTemp</th><th>RunTemp</th>'
-        + "".join(f'<th>{p}+</th><th>{p}-</th>' for p in chart_params)
-    )
-    # Filter row: one empty <th> per raw-data column, populated by JS with
-    # per-column text/select inputs for interactive filtering.
-    raw_filter_ths = "".join(
-        '<th class="p-1"></th>' for _ in range(6 + 2 * len(chart_params))
-    )
     param_opts = "".join(
         f'<option value="{p}">{p}</option>' for p in chart_params
     )
@@ -3643,7 +3690,6 @@ def generate_html_report(
         f"<title>{TOOL_NAME} \u2014 RMT Margin Analysis Report"
         + (f" \u2014 {_html.escape(project_name)}" if project_name else "") + "</title>",
         '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">',
-        '<link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/dataTables.bootstrap5.min.css">',
         "<style>",
         "body{background:#f0f4f8;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;}",
         ".rmt-hdr{background:linear-gradient(135deg,#0071C5,#004E8C);color:#fff;padding:26px 40px 20px;}",
@@ -3662,8 +3708,6 @@ def generate_html_report(
         ".badge.bg-success{background:#059669!important;}",
         ".badge.bg-danger{background:#dc2626!important;}",
         "td.weak-cell{background:#fee2e2!important;color:#b91c1c;font-weight:700;}",
-        "tr.filter-row th{padding:4px!important;background:#1e3a8a;}",
-        "tr.filter-row input,tr.filter-row select{font-size:.72rem;padding:2px 4px;min-width:60px;}",
         ".rmt-hdr .brand-sub{font-size:1rem;opacity:.92;margin:0 0 6px;font-weight:500;}",
         ".rmt-hdr .proj-badge{background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);"
         "border-radius:999px;padding:3px 12px;font-size:.85rem;font-weight:600;margin-left:10px;vertical-align:middle;"
@@ -3671,6 +3715,33 @@ def generate_html_report(
         ".mr-chg{background:#fef3c7!important;}",
         ".odt-var{background:#b45309!important;}",
         ".odt-var-cell{background:#fef3c7;}",
+        ".raw-wrap{max-height:70vh;overflow:auto;border:1px solid #dee2e6;border-radius:6px;position:relative;}",
+        ".raw-table{border-collapse:separate;border-spacing:0;font-size:.78rem;white-space:nowrap;width:max-content;min-width:100%;}",
+        ".raw-table th,.raw-table td{padding:3px 8px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;background:#fff;}",
+        ".raw-table thead th{position:sticky;top:0;background:#1e40af;color:#fff;z-index:3;text-align:center;font-weight:600;}",
+        ".raw-table thead tr.flt th{background:#1e3a8a;padding:2px 3px;}",
+        ".raw-table thead tr.flt input,.raw-table thead tr.flt select{font-size:.72rem;padding:1px 4px;min-width:56px;width:100%;}",
+        ".raw-table thead tr.flt input.bad{border-color:#dc2626;background:#fee2e2;}",
+        ".raw-table .stk{position:sticky;z-index:2;}",
+        ".raw-wrap.nostk .raw-table td.stk{position:static;}",
+        ".raw-wrap.nostk .raw-table thead th.stk{left:auto!important;}",
+        ".raw-wrap.nostk .raw-table .stk-last{box-shadow:none;}",
+        ".raw-table thead .stk{z-index:4;}",
+        ".raw-table td.stk{background:#f8fafc;}",
+        ".raw-table td.stk-last,.raw-table th.stk-last{box-shadow:inset -2px 0 0 #94a3b8;}",
+        ".raw-table td.num{text-align:right;font-variant-numeric:tabular-nums;}",
+        ".raw-table th.sortable{cursor:pointer;user-select:none;}",
+        ".raw-table th .sa{opacity:.75;font-size:.7rem;margin-left:3px;}",
+        ".raw-table tbody tr:hover td{box-shadow:inset 0 0 0 999px rgba(30,64,175,.06);}",
+        ".st-fail,td.st-fail{background:#fee2e2!important;color:#b91c1c;font-weight:700;}",
+        ".st-warn,td.st-warn{background:#fef3c7!important;color:#92400e;font-weight:600;}",
+        ".rs{display:inline-block;min-width:44px;text-align:center;border-radius:999px;padding:0 6px;font-size:.7rem;font-weight:700;color:#fff;}",
+        ".rs-PASS{background:#059669;}.rs-WARN{background:#d97706;}.rs-FAIL{background:#dc2626;}",
+        ".df-neg{background:#fee2e2;}.df-pos{background:#dcfce7;}",
+        ".raw-colmenu{position:relative;}",
+        ".raw-colmenu>summary{list-style:none;}.raw-colmenu>summary::-webkit-details-marker{display:none;}",
+        ".raw-colmenu-body{position:absolute;left:0;z-index:20;max-width:90vw;background:#fff;border:1px solid #cbd5e1;"
+        "border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.12);padding:8px 12px;min-width:220px;font-size:.82rem;}",
         "</style>",
         "</head>",
         "<body>",
@@ -3847,18 +3918,75 @@ def generate_html_report(
         # ── Raw data tab ──
         '<div class="tab-pane fade" id="dataTab">',
         '<div class="section-card">',
-        '<h5 class="fw-bold mb-3">Raw RMT Data</h5>',
-        '<p class="text-muted small mb-3">Cells highlighted '
-        '<span class="weak-cell px-2">in red</span> are weaker than the configured '
-        '&plusmn;Ref limit (+ value below +Ref, or &minus; value above &minus;Ref). '
-        'Use the filter boxes in the header row to narrow down any column '
-        '(dropdowns for File/Freq/Gear/Rank, free-text for numeric columns).</p>',
-        '<div class="table-responsive">',
-        '<table id="rawTable" class="table table-sm table-striped table-bordered" style="font-size:.78rem;white-space:nowrap">',
-        f'<thead class="table-dark"><tr>{raw_tbl_hdrs}</tr>'
-        f'<tr class="filter-row">{raw_filter_ths}</tr></thead>',
-        '<tbody></tbody>',
-        '</table></div></div></div>',
+        '<div class="d-flex flex-wrap align-items-center gap-2 mb-2">',
+        '<h5 class="fw-bold mb-0 me-auto">Raw RMT Data</h5>',
+        '<div class="btn-group btn-group-sm" role="group" aria-label="Raw data view">',
+        '<input type="radio" class="btn-check" name="rawView" id="rawViewM" value="margin" checked>',
+        '<label class="btn btn-outline-primary" for="rawViewM">Margins</label>',
+        '<input type="radio" class="btn-check" name="rawView" id="rawViewW" value="width">',
+        '<label class="btn btn-outline-primary" for="rawViewW">Window width</label>',
+        '<input type="radio" class="btn-check" name="rawView" id="rawViewS" value="slack">',
+        '<label class="btn btn-outline-primary" for="rawViewS">Slack vs Ref</label>',
+        '</div>',
+        '<details class="raw-colmenu"><summary class="btn btn-sm btn-outline-secondary">Columns &#9662;</summary>'
+        '<div class="raw-colmenu-body" id="rawColMenu"></div></details>',
+        '<button class="btn btn-sm btn-outline-success" id="rawCopy" title="Copy the filtered view as '
+        'tab-separated text (paste into Excel)">&#x1F4CB; Copy for Excel</button>',
+        '<button class="btn btn-sm btn-outline-success" id="rawCsv" title="Download the filtered view as CSV">'
+        '&#x2B07; CSV</button>',
+        '</div>',
+        '<div class="d-flex flex-wrap align-items-center gap-3 mb-2 small">',
+        '<label>Show <select id="rawOnly" class="form-select form-select-sm d-inline-block w-auto">'
+        '<option value="all">All rows</option>'
+        '<option value="warn">Near or below &plusmn;Ref (WARN + FAIL)</option>'
+        '<option value="fail">Below &plusmn;Ref (FAIL)</option></select></label>',
+        '<label title="A margin is WARN when |margin| is below this multiple of |Ref| (2&times; = the Overview '
+        'PASS rule)">Warn band <select id="rawWarn" class="form-select form-select-sm d-inline-block w-auto">'
+        '<option value="1.25">1.25&times; Ref</option><option value="1.5">1.5&times; Ref</option>'
+        '<option value="2" selected>2&times; Ref (Overview rule)</option></select></label>',
+        '<div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="rawHeat" checked>'
+        '<label class="form-check-label" for="rawHeat">Heatmap</label></div>',
+        '<input type="search" id="rawSearch" class="form-control form-control-sm w-auto" '
+        'placeholder="Search file / rank / phase&hellip;">',
+        '<label>Rows <select id="rawPageSize" class="form-select form-select-sm d-inline-block w-auto">'
+        '<option>25</option><option selected>50</option><option>100</option><option value="0">All</option>'
+        '</select></label>',
+        '<button class="btn btn-sm btn-outline-secondary" id="rawReset">&#x21BA; Reset filters</button>',
+        '</div>',
+        '<p class="text-muted small mb-2">'
+        '<span class="st-fail px-1">Red</span> = weaker than &plusmn;Ref, '
+        '<span class="st-warn px-1">amber</span> = inside the warn band. Heatmap shades each column from '
+        'weakest (red) to strongest (green). Numeric filters accept <code>&lt;15</code>, <code>&gt;=20</code>, '
+        '<code>10..20</code> or a value; on margin columns they compare |margin|. Click a header to sort. '
+        'Status / Worst / Min slack use the visible parameters.</p>',
+        '<div id="rawCount" class="small fw-semibold mb-1"></div>',
+        '<div class="raw-wrap" id="rawWrap"><table id="rawTable" class="raw-table">'
+        '<thead></thead><tbody></tbody></table></div>',
+        '<div class="d-flex align-items-center gap-2 mt-2 small" id="rawPager"></div>',
+        '</div>',
+
+        # ── Drift comparison (A vs B) ──
+        '<div class="section-card" id="driftCard">',
+        '<div class="d-flex flex-wrap align-items-center gap-2 mb-2">',
+        '<h5 class="fw-bold mb-0 me-auto">&#x0394; Drift Comparison (A &rarr; B)</h5>',
+        '<label class="small">Compare by <select id="dfDim" class="form-select form-select-sm d-inline-block w-auto">'
+        '</select></label>',
+        '<label class="small">A <select id="dfA" class="form-select form-select-sm d-inline-block w-auto"></select></label>',
+        '<label class="small">B <select id="dfB" class="form-select form-select-sm d-inline-block w-auto"></select></label>',
+        '<label class="small">Metric <select id="dfMetric" class="form-select form-select-sm d-inline-block w-auto">'
+        '<option value="side">Per side (&minus; / +)</option><option value="width">Window width</option>'
+        '</select></label>',
+        '<button class="btn btn-sm btn-outline-success" id="dfCsv">&#x2B07; &#x0394; CSV</button>',
+        '</div>',
+        '<p class="text-muted small mb-2">&#x0394; = |margin B| &minus; |margin A| for the same rank (matched on '
+        'the other keys and averaged when several rows match). <span class="df-neg px-1">Red</span> = margin '
+        'lost, <span class="df-pos px-1">green</span> = margin gained. Default: Boot RMT &rarr; Run RMT for '
+        'thermal (DTR) data. Uses the parameters visible in the table above.</p>',
+        '<div id="dfSummary" class="mb-2"></div>',
+        '<div class="raw-wrap" style="max-height:55vh"><table id="dfTable" class="raw-table">'
+        '<thead></thead><tbody></tbody></table></div>',
+        '</div>',
+        '</div>',
 
         "</div>",  # tab-content
         "</div>",  # container
@@ -3868,16 +3996,14 @@ def generate_html_report(
         + ' &mdash; ' + generated + "</div>",
 
         # CDN scripts
-        '<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>',
         '<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>',
         '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>',
-        '<script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>',
-        '<script src="https://cdn.datatables.net/1.13.7/js/dataTables.bootstrap5.min.js"></script>',
 
         # Embedded data + JS
         "<script>",
         "const D=" + embedded_data + ";",
         "const RAW=" + raw_data_json + ";",
+        "const RAWMETA=" + raw_meta_json + ";",
         r"""
 const PAL=["#0071C5","#00A3E0","#00305E","#4DB6FF","#059669","#d97706","#7C3AED","#dc2626"];
 
@@ -4008,51 +4134,369 @@ buildDashboard();
 """,
         drift_init_js,
         r"""
-/* ── Raw DataTable ── */
-const tb=document.querySelector('#rawTable tbody');
-const THR=D.thresholds||{};
-RAW.forEach(r=>{
-  const tr=document.createElement('tr');
-  const base=[r.file,r.freq,r.gear,r.rank,r.bt??'-',r.rt??'-'];
-  base.forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.appendChild(td);});
-  D.params.forEach(p=>{
-    const pv=r[p+'+'], mv=r[p+'-'], th=THR[p]||{};
-    const tdP=document.createElement('td');tdP.textContent=pv??'-';
-    if(pv!=null&&th.plus!=null&&Number(pv)<th.plus)tdP.classList.add('weak-cell');
-    tr.appendChild(tdP);
-    const tdM=document.createElement('td');tdM.textContent=mv??'-';
-    if(mv!=null&&th.minus!=null&&Number(mv)>th.minus)tdM.classList.add('weak-cell');
-    tr.appendChild(tdM);
-  });
-  tb.appendChild(tr);
-});
-$(()=>{
-  const rawTable=$('#rawTable').DataTable({pageLength:25,scrollX:true,
-    orderCellsTop:true,
-    dom:"<'row'<'col-sm-6'l><'col-sm-6'f>>rtip"});
-  /* ── Per-column filters (dropdowns for categorical, text for numeric) ── */
-  $('#rawTable thead tr.filter-row th').each(function(i){
-    const col=rawTable.column(i);
-    const cell=$(this).empty();
-    if(i<4){ /* File, Freq, Gear, Rank -> dropdown of distinct values */
-      const sel=$('<select class="form-select form-select-sm"><option value="">All</option></select>')
-        .appendTo(cell)
-        .on('change',function(){
-          const v=$.fn.dataTable.util.escapeRegex($(this).val());
-          col.search(v?'^'+v+'$':'',true,false).draw();
-        });
-      col.data().unique().sort().each(v=>{
-        if(v!==null&&v!==undefined&&v!=='')sel.append('<option value="'+v+'">'+v+'</option>');
-      });
-    } else { /* numeric margin/temperature columns -> free-text filter */
-      $('<input type="text" class="form-control form-control-sm" placeholder="Filter"/>')
-        .appendTo(cell)
-        .on('keyup change clear',function(){
-          if(col.search()!==this.value)col.search(this.value).draw();
-        });
+/* ── Raw RMT Data explorer (sticky columns, views, status, heatmap, filters, export) ── */
+(function(){
+const PARAMS=D.params||[], THR=D.thresholds||{}, META=(typeof RAWMETA!=='undefined'&&RAWMETA)||{};
+const MINUS='\u2212';
+const S={view:'margin',sortK:'',dir:1,page:0,flt:{},only:'all',warn:2,heat:true,q:'',size:50,
+         hidden:new Set(META.constant||[]),
+         showTemp:RAW.some(r=>r.bt!=null||r.rt!=null)};
+const $id=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const num=v=>(v==null||v===''||Number.isNaN(Number(v)))?null:Number(v);
+const fmt=v=>{const n=num(v);if(n==null)return '';return Number.isInteger(n)?String(n):String(+n.toFixed(2));};
+const refP=p=>Math.abs(num((THR[p]||{}).plus)??10), refM=p=>Math.abs(num((THR[p]||{}).minus)??10);
+const visParams=()=>PARAMS.filter(p=>!S.hidden.has(p));
+const natCmp=(a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true});
+
+function sideSt(mag,ref){if(mag==null)return '';if(mag<ref)return 'FAIL';if(mag<ref*S.warn)return 'WARN';return 'PASS';}
+function slackSt(s,ref){if(s==null)return '';if(s<0)return 'FAIL';if(s<ref*(S.warn-1))return 'WARN';return 'PASS';}
+function widthOf(r,p){const a=num(r[p+'+']),b=num(r[p+'-']);return (a==null||b==null)?null:a-b;}
+function widthSt(w,p){if(w==null)return '';const t=refP(p);if(w<t)return 'FAIL';if(w<t*S.warn)return 'WARN';return 'PASS';}
+function slackOf(r,p,plus){const v=num(r[p+(plus?'+':'-')]);return v==null?null:Math.abs(v)-(plus?refP(p):refM(p));}
+
+/* Row status / worst parameter / min slack over the visible parameters. */
+function derive(r){
+  let worst='',slack=null,st='PASS',any=false;
+  const rank={PASS:0,WARN:1,FAIL:2};
+  visParams().forEach(p=>{[false,true].forEach(plus=>{
+    const s=slackOf(r,p,plus);if(s==null)return;any=true;
+    const cs=slackSt(s,plus?refP(p):refM(p));if(rank[cs]>rank[st])st=cs;
+    if(slack==null||s<slack){slack=s;worst=p+' '+(plus?'+':MINUS);}
+  });});
+  r._d={st:any?st:'',worst,slack};
+}
+
+function columns(){
+  const c=[
+    {k:'lbl',h:'File',cat:true,get:r=>r.lbl,tip:r=>r.file,stk:true},
+    {k:'phase',h:'Phase',cat:true,get:r=>r.phase,stk:true},
+    {k:'rank',h:'Rank',cat:true,get:r=>r.rank,stk:true},
+    {k:'freq',h:'Freq',cat:true,numSort:true,get:r=>r.freq},
+    {k:'gear',h:'Gear',cat:true,numSort:true,get:r=>r.gear},
+    {k:'_st',h:'Status',cat:true,get:r=>r._d.st,badge:true},
+    {k:'_worst',h:'Worst',cat:true,get:r=>r._d.worst},
+    {k:'_slack',h:'Min slack',get:r=>r._d.slack,st:v=>v==null?'':(v<0?'FAIL':'')},
+  ];
+  if(S.showTemp){
+    c.push({k:'bt',h:'BootTemp',cat:true,numSort:true,get:r=>r.bt==null?'':fmt(r.bt)});
+    c.push({k:'rt',h:'RunTemp',cat:true,numSort:true,get:r=>r.rt==null?'':fmt(r.rt)});
+  }
+  visParams().forEach(p=>{
+    if(S.view==='width'){
+      c.push({k:p+'|W',grp:p,h:'W',get:r=>widthOf(r,p),st:v=>widthSt(v,p),heat:true});
+    }else if(S.view==='slack'){
+      c.push({k:p+'|s-',grp:p,h:MINUS,get:r=>slackOf(r,p,false),st:v=>slackSt(v,refM(p)),heat:true});
+      c.push({k:p+'|s+',grp:p,h:'+',get:r=>slackOf(r,p,true),st:v=>slackSt(v,refP(p)),heat:true});
+    }else{
+      c.push({k:p+'|-',grp:p,h:MINUS,mag:true,get:r=>num(r[p+'-']),st:v=>v==null?'':sideSt(Math.abs(v),refM(p)),heat:true});
+      c.push({k:p+'|+',grp:p,h:'+',mag:true,get:r=>num(r[p+'+']),st:v=>v==null?'':sideSt(Math.abs(v),refP(p)),heat:true});
     }
   });
+  return c;
+}
+/* Value used for sorting / heat / numeric filters: |margin| on margin columns. */
+const strength=(c,v)=>v==null?null:(c.mag?Math.abs(v):v);
+
+function mkPred(s){
+  s=(s||'').trim();if(!s)return null;
+  const N='(-?\\d*\\.?\\d+)';let m;
+  if((m=s.match(new RegExp('^'+N+'\\s*\\.\\.\\s*'+N+'$')))){const a=+m[1],b=+m[2];return v=>v>=Math.min(a,b)&&v<=Math.max(a,b);}
+  if((m=s.match(new RegExp('^(<=|>=|!=|<|>|=)\\s*'+N+'$')))){const n=+m[2];
+    return {'<':v=>v<n,'<=':v=>v<=n,'>':v=>v>n,'>=':v=>v>=n,'=':v=>v===n,'!=':v=>v!==n}[m[1]];}
+  if((m=s.match(new RegExp('^'+N+'$')))){const n=+m[1];return v=>v===n;}
+  return false;
+}
+
+let COLS=[];
+function filtered(){
+  RAW.forEach(derive);
+  const q=S.q.trim().toLowerCase();
+  const preds=COLS.map(c=>{const f=S.flt[c.k];if(f==null||f==='')return null;
+    if(c.cat)return r=>String(c.get(r))===f;
+    const p=mkPred(f);if(!p)return null;return r=>{const v=strength(c,num(c.get(r)));return v!=null&&p(v);};});
+  let rows=RAW.filter(r=>{
+    if(S.only==='fail'&&r._d.st!=='FAIL')return false;
+    if(S.only==='warn'&&r._d.st!=='FAIL'&&r._d.st!=='WARN')return false;
+    if(q&&![r.lbl,r.file,r.phase,r.rank,r.freq,r.gear].some(v=>String(v).toLowerCase().includes(q)))return false;
+    return preds.every(p=>!p||p(r));
+  });
+  if(S.sortK){
+    const c=COLS.find(x=>x.k===S.sortK);
+    if(c){rows=rows.slice().sort((a,b)=>{
+      let va=c.get(a),vb=c.get(b);
+      if(!c.cat){va=strength(c,num(va));vb=strength(c,num(vb));
+        if(va==null&&vb==null)return 0;if(va==null)return 1;if(vb==null)return -1;return (va-vb)*S.dir;}
+      if(c.badge){const o={FAIL:0,WARN:1,PASS:2,'':3};return (o[va]-o[vb])*S.dir;}
+      return natCmp(va,vb)*S.dir;});}
+  }
+  return rows;
+}
+
+function heatRange(){
+  const hr={};
+  COLS.forEach(c=>{if(!c.heat)return;let lo=null,hi=null;
+    RAW.forEach(r=>{const v=strength(c,num(c.get(r)));if(v==null)return;lo=lo==null?v:Math.min(lo,v);hi=hi==null?v:Math.max(hi,v);});
+    hr[c.k]=[lo,hi];});
+  return hr;
+}
+function heatBg(c,v,hr){
+  const [lo,hi]=hr[c.k]||[];if(v==null||lo==null||hi==null||hi===lo)return '';
+  const t=(strength(c,v)-lo)/(hi-lo);return 'background:hsl('+Math.round(120*t)+',70%,90%)';
+}
+
+function renderHead(){
+  const th=$id('rawTable').tHead;
+  const hasGrp=COLS.some(c=>c.grp);
+  let r1='',r2='',r3='';
+  const sortMark=k=>S.sortK===k?'<span class="sa">'+(S.dir>0?'\u25B2':'\u25BC')+'</span>':'';
+  let i=0;
+  while(i<COLS.length){
+    const c=COLS[i];
+    if(!c.grp){
+      r1+='<th class="sortable'+(c.stk?' stk':'')+'" data-k="'+esc(c.k)+'" data-ci="'+i+'"'+(hasGrp?' rowspan="2"':'')+'>'+esc(c.h)+sortMark(c.k)+'</th>';
+      i++;continue;
+    }
+    let j=i;while(j<COLS.length&&COLS[j].grp===c.grp)j++;
+    const rp=refP(c.grp),rm=refM(c.grp);
+    r1+='<th colspan="'+(j-i)+'" title="Ref: +'+fmt(rp)+' / '+MINUS+fmt(rm)+'">'+esc(c.grp)+'</th>';
+    for(let k=i;k<j;k++)r2+='<th class="sortable" data-k="'+esc(COLS[k].k)+'">'+esc(COLS[k].h)+sortMark(COLS[k].k)+'</th>';
+    i=j;
+  }
+  COLS.forEach((c,ci)=>{
+    let inner;
+    if(c.cat){
+      const vals=[...new Set(RAW.map(r=>{derive(r);return String(c.get(r));}))].filter(v=>v!=='').sort(c.numSort?(a,b)=>num(a)-num(b):natCmp);
+      inner='<select data-k="'+esc(c.k)+'"><option value="">All</option>'+vals.map(v=>'<option'+(S.flt[c.k]===v?' selected':'')+'>'+esc(v)+'</option>').join('')+'</select>';
+    }else{
+      inner='<input type="text" data-k="'+esc(c.k)+'" placeholder="&lt;15, 10..20" value="'+esc(S.flt[c.k]||'')+'">';
+    }
+    r3+='<th class="'+(c.stk?'stk':'')+'" data-ci="'+ci+'">'+inner+'</th>';
+  });
+  th.innerHTML='<tr class="hr1">'+r1+'</tr>'+(hasGrp?'<tr class="hr2">'+r2+'</tr>':'')+'<tr class="flt">'+r3+'</tr>';
+  th.querySelectorAll('th.sortable').forEach(el=>el.addEventListener('click',()=>{
+    const k=el.dataset.k;if(S.sortK===k)S.dir=-S.dir;else{S.sortK=k;S.dir=1;}S.page=0;renderHead();renderBody();}));
+  th.querySelectorAll('tr.flt select, tr.flt input').forEach(el=>{
+    const ev=el.tagName==='SELECT'?'change':'input';
+    el.addEventListener(ev,()=>{
+      const v=el.value;S.flt[el.dataset.k]=v;
+      if(el.tagName==='INPUT'){const ok=mkPred(v)!==false;el.classList.toggle('bad',!ok);}
+      S.page=0;renderBody();});
+  });
+}
+
+function layoutSticky(){
+  const tbl=$id('rawTable'), th=tbl.tHead;
+  const h1=th.querySelector('tr.hr1'), h2=th.querySelector('tr.hr2'), f=th.querySelector('tr.flt');
+  const t1=h1?h1.getBoundingClientRect().height:0, t2=h2?h2.getBoundingClientRect().height:0;
+  if(h2)h2.querySelectorAll('th').forEach(x=>x.style.top=t1+'px');
+  if(f)f.querySelectorAll('th').forEach(x=>x.style.top=(t1+t2)+'px');
+  let left=0;const css=[];const stkIdx=COLS.map((c,i)=>c.stk?i:-1).filter(i=>i>=0);
+  const h1cells=[...h1.querySelectorAll('th.stk')];
+  stkIdx.forEach((ci,n)=>{css.push('#rawTable .stk-'+ci+'{left:'+left+'px}');left+=h1cells[n]?h1cells[n].getBoundingClientRect().width:0;});
+  let st=$id('rawStkCss');if(!st){st=document.createElement('style');st.id='rawStkCss';document.head.appendChild(st);}
+  st.textContent=css.join('\n');
+  /* Narrow window: frozen columns would hide the data, so let them scroll. */
+  const wrap=$id('rawWrap');wrap.classList.toggle('nostk',left>wrap.clientWidth*0.55);
+  h1cells.forEach((el,n)=>{el.classList.add('stk-'+stkIdx[n]);if(n===h1cells.length-1)el.classList.add('stk-last');});
+  if(f)f.querySelectorAll('th.stk').forEach(el=>{el.classList.add('stk-'+el.dataset.ci);if(+el.dataset.ci===stkIdx[stkIdx.length-1])el.classList.add('stk-last');});
+}
+
+let LAST=[];
+function renderBody(){
+  const rows=filtered();LAST=rows;
+  const hr=S.heat?heatRange():{};
+  const size=S.size>0?S.size:rows.length||1;
+  const pages=Math.max(1,Math.ceil(rows.length/size));if(S.page>=pages)S.page=pages-1;
+  const start=S.page*size, page=rows.slice(start,start+size);
+  const lastStk=Math.max(...COLS.map((c,i)=>c.stk?i:-1));
+  let html='';
+  page.forEach(r=>{
+    html+='<tr>';
+    COLS.forEach((c,ci)=>{
+      const raw=c.get(r);let cls=c.stk?'stk stk-'+ci+(ci===lastStk?' stk-last':''):'';let style='';let txt;
+      if(c.badge){txt=raw?'<span class="rs rs-'+raw+'">'+raw+'</span>':'';}
+      else if(c.cat){txt=esc(raw);}
+      else{
+        const v=num(raw);txt=fmt(v);cls+=' num';
+        const st=c.st?c.st(v):'';
+        if(st==='FAIL')cls+=' st-fail';else if(st==='WARN')cls+=' st-warn';else if(S.heat&&c.heat)style=heatBg(c,v,hr);
+      }
+      const tip=c.tip?' title="'+esc(c.tip(r))+'"':'';
+      html+='<td class="'+cls.trim()+'"'+(style?' style="'+style+'"':'')+tip+'>'+txt+'</td>';
+    });
+    html+='</tr>';
+  });
+  $id('rawTable').tBodies[0].innerHTML=html||'<tr><td colspan="'+COLS.length+'" class="text-muted">No rows match the filters.</td></tr>';
+  const cnt={PASS:0,WARN:0,FAIL:0};rows.forEach(r=>{if(cnt[r._d.st]!=null)cnt[r._d.st]++;});
+  $id('rawCount').innerHTML='Showing '+(rows.length?start+1:0)+'&ndash;'+Math.min(start+size,rows.length)+' of '+rows.length+
+    ' filtered rows ('+RAW.length+' total) &nbsp;&middot;&nbsp; <span class="rs rs-FAIL">'+cnt.FAIL+'</span> FAIL '+
+    '<span class="rs rs-WARN">'+cnt.WARN+'</span> WARN <span class="rs rs-PASS">'+cnt.PASS+'</span> PASS';
+  $id('rawPager').innerHTML=pages>1?
+    '<button class="btn btn-sm btn-outline-secondary" id="rawPrev"'+(S.page===0?' disabled':'')+'>&laquo; Prev</button>'+
+    '<span>Page '+(S.page+1)+' of '+pages+'</span>'+
+    '<button class="btn btn-sm btn-outline-secondary" id="rawNext"'+(S.page>=pages-1?' disabled':'')+'>Next &raquo;</button>':'';
+  if(pages>1){$id('rawPrev').onclick=()=>{S.page--;renderBody();};$id('rawNext').onclick=()=>{S.page++;renderBody();};}
+  requestAnimationFrame(layoutSticky);
+  renderDrift();
+}
+
+function exportRows(){
+  const hdr=['Source file',...COLS.map(c=>c.grp?c.grp+' '+c.h:c.h)];
+  const body=LAST.map(r=>[r.file,...COLS.map(c=>{const v=c.get(r);return c.cat||c.badge?String(v??''):fmt(v);})]);
+  return [hdr,...body];
+}
+function toDelim(tab,d){return tab.map(row=>row.map(v=>{v=String(v);return (d===','&&/[",\n]/.test(v))?'"'+v.replace(/"/g,'""')+'"':v;}).join(d)).join('\r\n');}
+function download(name,text){
+  const blob=new Blob(['\ufeff'+text],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);
+}
+function copyText(text,btn){
+  const done=()=>{const o=btn.innerHTML;btn.innerHTML='&#x2714; Copied';setTimeout(()=>btn.innerHTML=o,1500);};
+  if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).then(done,()=>fallback());}else fallback();
+  function fallback(){const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');done();}catch(e){alert('Copy failed: '+e);}ta.remove();}
+}
+
+function buildColMenu(){
+  const box=$id('rawColMenu');
+  const cst=new Set(META.constant||[]);
+  box.innerHTML='<div class="fw-semibold mb-1">Parameters</div>'+PARAMS.map(p=>
+    '<div class="form-check"><input class="form-check-input" type="checkbox" id="rawCol_'+p+'" data-p="'+esc(p)+'"'+(S.hidden.has(p)?'':' checked')+'>'+
+    '<label class="form-check-label" for="rawCol_'+p+'">'+esc(p)+(cst.has(p)?' <span class="text-muted">(constant)</span>':'')+'</label></div>').join('')+
+    '<hr class="my-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="rawColTemp"'+(S.showTemp?' checked':'')+'>'+
+    '<label class="form-check-label" for="rawColTemp">BootTemp / RunTemp</label></div>';
+  box.querySelectorAll('input[data-p]').forEach(el=>el.addEventListener('change',()=>{
+    if(el.checked)S.hidden.delete(el.dataset.p);else S.hidden.add(el.dataset.p);rebuild();}));
+  $id('rawColTemp').addEventListener('change',e=>{S.showTemp=e.target.checked;rebuild();});
+}
+
+function rebuild(){COLS=columns();Object.keys(S.flt).forEach(k=>{if(!COLS.some(c=>c.k===k))delete S.flt[k];});
+  if(S.sortK&&!COLS.some(c=>c.k===S.sortK))S.sortK='';renderHead();renderBody();}
+
+/* ── Drift comparison A -> B ── */
+const DIMS=[{k:'phase',h:'Phase'},{k:'grp',h:'File group'},{k:'freq',h:'Frequency'},{k:'gear',h:'Gear'},{k:'lbl',h:'File'}];
+const distinct=k=>[...new Set(RAW.map(r=>String(r[k])))].filter(v=>v!=='').sort(natCmp);
+const DF={dim:'',a:'',b:'',metric:'side',rows:[],cols:[]};
+function keyDims(d){
+  if(d==='lbl')return ['phase','rank'];
+  if(d==='phase')return ['lbl','rank'];
+  return ['grp','freq','gear','phase','rank'].filter(x=>x!==d);
+}
+function initDrift(){
+  const avail=DIMS.filter(d=>distinct(d.k).length>=2);
+  const sel=$id('dfDim');
+  if(!avail.length){$id('driftCard').querySelector('#dfSummary').innerHTML=
+    '<div class="alert alert-info py-2 mb-0">Only one data set is loaded &mdash; nothing to compare.</div>';
+    ['dfDim','dfA','dfB','dfMetric','dfCsv'].forEach(id=>$id(id).disabled=true);return false;}
+  sel.innerHTML=avail.map(d=>'<option value="'+d.k+'">'+d.h+'</option>').join('');
+  const phases=distinct('phase');
+  DF.dim=(phases.includes('Boot RMT')&&phases.includes('Run RMT'))?'phase':avail[0].k;
+  sel.value=DF.dim;fillAB(true);
+  sel.addEventListener('change',()=>{DF.dim=sel.value;fillAB(true);renderDrift();});
+  $id('dfA').addEventListener('change',e=>{DF.a=e.target.value;renderDrift();});
+  $id('dfB').addEventListener('change',e=>{DF.b=e.target.value;renderDrift();});
+  $id('dfMetric').addEventListener('change',e=>{DF.metric=e.target.value;renderDrift();});
+  $id('dfCsv').addEventListener('click',()=>{
+    const hdr=DF.cols.map(c=>c.h),body=DF.rows.map(r=>DF.cols.map(c=>c.txt(r)));
+    download('RMT_drift_'+DF.dim+'.csv',toDelim([hdr,...body],','));});
+  return true;
+}
+function fillAB(reset){
+  const vals=distinct(DF.dim);
+  if(reset){
+    if(DF.dim==='phase'&&vals.includes('Boot RMT')&&vals.includes('Run RMT')){DF.a='Boot RMT';DF.b='Run RMT';}
+    else{DF.a=vals[0];DF.b=vals[1]||vals[0];}
+  }
+  const opts=v=>vals.map(x=>'<option'+(x===v?' selected':'')+'>'+esc(x)+'</option>').join('');
+  $id('dfA').innerHTML=opts(DF.a);$id('dfB').innerHTML=opts(DF.b);
+}
+function renderDrift(){
+  if(!DF.dim)return;
+  const kd=keyDims(DF.dim), ps=visParams(), side=DF.metric==='side';
+  const agg=(val)=>{const m=new Map();
+    RAW.filter(r=>String(r[DF.dim])===val).forEach(r=>{
+      const key=kd.map(k=>r[k]).join('\u0001');
+      let e=m.get(key);if(!e){e={keys:kd.map(k=>r[k]),n:{},s:{}};m.set(key,e);}
+      ps.forEach(p=>{
+        const vals=side?[[p+'|-',num(r[p+'-'])],[p+'|+',num(r[p+'+'])]]:[[p+'|W',widthOf(r,p)]];
+        vals.forEach(([k,v])=>{if(v==null)return;v=side?Math.abs(v):v;e.s[k]=(e.s[k]||0)+v;e.n[k]=(e.n[k]||0)+1;});
+      });});
+    return m;};
+  const A=agg(DF.a),B=agg(DF.b);
+  const cellKeys=[];ps.forEach(p=>{if(side){cellKeys.push([p,p+'|-',MINUS],[p,p+'|+','+']);}else cellKeys.push([p,p+'|W','W']);});
+  const rows=[];
+  B.forEach((eb,key)=>{const ea=A.get(key);if(!ea)return;
+    const d={keys:eb.keys,v:{}};let worst=null,wk='';
+    cellKeys.forEach(([p,k,h])=>{if(!ea.n[k]||!eb.n[k])return;const dv=eb.s[k]/eb.n[k]-ea.s[k]/ea.n[k];d.v[k]=dv;
+      if(worst==null||dv<worst){worst=dv;wk=p+' '+h;}});
+    d.worst=worst;d.wk=wk;rows.push(d);});
+  rows.sort((x,y)=>(x.worst??0)-(y.worst??0));
+  const dimH=k=>(DIMS.find(d=>d.k===k)||{h:k==='rank'?'Rank':k}).h;
+  const sgn=v=>v==null?'':(v>0?'+':'')+fmt(v);
+  DF.cols=[...kd.map((k,i)=>({h:dimH(k),txt:r=>String(r.keys[i])})),
+    {h:'Worst \u0394',txt:r=>sgn(r.worst)},{h:'Worst at',txt:r=>r.wk},
+    ...cellKeys.map(([p,k,h])=>({h:p+' '+h,k,p,sub:h,txt:r=>sgn(r.v[k])}))];
+  DF.rows=rows;
+  let mx=0;rows.forEach(r=>Object.values(r.v).forEach(v=>{mx=Math.max(mx,Math.abs(v));}));
+  const bg=v=>{if(v==null||v===0||!mx)return '';const a=(0.12+0.55*Math.abs(v)/mx).toFixed(2);
+    return v<0?'background:rgba(239,68,68,'+a+')':'background:rgba(34,197,94,'+a+')';};
+  const th=$id('dfTable').tHead;
+  let h1='',h2='';
+  kd.forEach(k=>{h1+='<th rowspan="2">'+esc(dimH(k))+'</th>';});
+  h1+='<th rowspan="2">Worst &#x0394;</th><th rowspan="2">Worst at</th>';
+  ps.forEach(p=>{h1+='<th colspan="'+(side?2:1)+'">'+esc(p)+'</th>';h2+=side?'<th>'+MINUS+'</th><th>+</th>':'<th>W</th>';});
+  th.innerHTML='<tr class="hr1">'+h1+'</tr><tr class="hr2">'+h2+'</tr>';
+  const r1h=th.querySelector('tr.hr1').getBoundingClientRect().height;th.querySelectorAll('tr.hr2 th').forEach(x=>x.style.top=r1h+'px');
+  $id('dfTable').tBodies[0].innerHTML=rows.length?rows.map(r=>'<tr>'+
+    r.keys.map(v=>'<td>'+esc(v)+'</td>').join('')+
+    '<td class="num fw-bold" style="'+bg(r.worst)+'">'+sgn(r.worst)+'</td><td>'+esc(r.wk)+'</td>'+
+    cellKeys.map(([p,k])=>'<td class="num" style="'+bg(r.v[k])+'">'+sgn(r.v[k])+'</td>').join('')+'</tr>').join('')
+    :'<tr><td colspan="'+(kd.length+2+cellKeys.length)+'" class="text-muted">No matching rows between A and B '+
+     '(A and B must share the other keys, e.g. the same rank).</td></tr>';
+  /* summary: per parameter mean / worst + top-10 worst cells */
+  const cells=[];rows.forEach(r=>cellKeys.forEach(([p,k,h])=>{if(r.v[k]!=null)cells.push({p,h,v:r.v[k],r});}));
+  const byP=ps.map(p=>{const cs=cells.filter(c=>c.p===p);if(!cs.length)return '';
+    const mean=cs.reduce((s,c)=>s+c.v,0)/cs.length;const w=cs.reduce((a,c)=>c.v<a.v?c:a);
+    return '<tr><td class="fw-semibold">'+esc(p)+'</td><td class="num" style="'+bg(mean)+'">'+sgn(mean)+'</td>'+
+      '<td class="num" style="'+bg(w.v)+'">'+sgn(w.v)+'</td><td>'+esc(w.r.keys.join(' \u00b7 '))+' ('+w.h+')</td></tr>';}).join('');
+  const top=cells.slice().sort((a,b)=>a.v-b.v).slice(0,10).filter(c=>c.v<0);
+  $id('dfSummary').innerHTML=rows.length?
+    '<div class="row g-3"><div class="col-lg-7"><table class="raw-table"><thead><tr><th>Parameter</th><th>Mean &#x0394;</th>'+
+    '<th>Worst &#x0394;</th><th>Worst at</th></tr></thead><tbody>'+byP+'</tbody></table></div>'+
+    '<div class="col-lg-5"><div class="small fw-semibold mb-1">Top '+top.length+' margin losses ('+esc(DF.a)+' &rarr; '+esc(DF.b)+')</div>'+
+    (top.length?'<ol class="small mb-0 ps-3">'+top.map(c=>'<li><b>'+sgn(c.v)+'</b> '+esc(c.p)+' '+c.h+' &mdash; '+
+      esc(c.r.keys.join(' \u00b7 '))+'</li>').join('')+'</ol>':'<div class="small text-success">No margin lost.</div>')+
+    '</div></div>':'';
+}
+
+/* ── wire controls ── */
+document.querySelectorAll('input[name="rawView"]').forEach(el=>el.addEventListener('change',()=>{S.view=el.value;S.page=0;rebuild();}));
+$id('rawOnly').addEventListener('change',e=>{S.only=e.target.value;S.page=0;renderBody();});
+$id('rawWarn').addEventListener('change',e=>{S.warn=+e.target.value;renderHead();renderBody();});
+$id('rawHeat').addEventListener('change',e=>{S.heat=e.target.checked;renderBody();});
+$id('rawSearch').addEventListener('input',e=>{S.q=e.target.value;S.page=0;renderBody();});
+$id('rawPageSize').addEventListener('change',e=>{S.size=+e.target.value;S.page=0;renderBody();});
+$id('rawReset').addEventListener('click',()=>{S.flt={};S.q='';S.only='all';S.sortK='';S.page=0;
+  $id('rawSearch').value='';$id('rawOnly').value='all';renderHead();renderBody();});
+$id('rawCopy').addEventListener('click',e=>copyText(toDelim(exportRows(),'\t'),e.currentTarget));
+$id('rawCsv').addEventListener('click',()=>download('RMT_raw_'+S.view+'.csv',toDelim(exportRows(),',')));
+document.addEventListener('click',e=>{const d=document.querySelector('.raw-colmenu');if(d&&d.open&&!d.contains(e.target))d.open=false;});
+/* Keep the Columns menu inside the window whichever side the toolbar wraps to. */
+document.querySelector('.raw-colmenu').addEventListener('toggle',e=>{
+  const d=e.currentTarget,b=$id('rawColMenu');if(!d.open)return;
+  b.style.left='0';b.style.right='auto';
+  const r=b.getBoundingClientRect();
+  if(r.right>window.innerWidth-8){b.style.left='auto';b.style.right='0';}
+  if(b.getBoundingClientRect().left<8){b.style.right='auto';b.style.left=(8-d.getBoundingClientRect().left)+'px';}
 });
+window.addEventListener('resize',()=>requestAnimationFrame(layoutSticky));
+const tabLink=document.querySelector('a[href="#dataTab"]');
+if(tabLink)tabLink.addEventListener('shown.bs.tab',()=>{layoutSticky();renderDrift();});
+
+buildColMenu();initDrift();rebuild();
+})();
 """,
         "</script>",
         "<script>",

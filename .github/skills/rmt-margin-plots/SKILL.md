@@ -66,7 +66,9 @@ training-changed and rank-varying MRs highlighted, cross-log MR diff), **ODT**
 (DIMM ODT summary — RTT_WR / RTT_NOM_WR / RTT_NOM_RD / RTT_PARK / DQS_RTT_PARK /
 CA / CS / Ron — CPU read ODT, per-rank ODT decoded from MR32-36, ODT latency
 offsets, BIOS ODT inputs, cross-log ODT matrix), **JMP Charts** (dropdown-driven
-side-by-side comparison panels, pre-filled with every chart) and Raw Data. MR /
+side-by-side comparison panels, pre-filled with every chart) and **Raw Data** (status /
+heatmap / numeric-filter explorer plus an A → B **Δ Drift Comparison**; for DTR it defaults
+to Boot RMT → Run RMT and lists the top margin losses). MR /
 ODT data is stored in `rmt_metadata.json`, so `--jmp-from-csv` re-runs in the
 same `--outdir` keep those tabs.
 

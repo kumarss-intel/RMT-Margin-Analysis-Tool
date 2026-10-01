@@ -47,7 +47,7 @@ You can drive it in three ways:
 | Workflow | **↺ Analyze Another Log** replaces the disabled *Next* button on Tab 3 after a successful run; also *File ▸ New Analysis* (`Ctrl+N`). It resets Tab 1 to the launch state (*Boot / MRC logs* source, empty file list, default stage/profile, locked tabs, default axis values). Project, JMP path and PPT template are kept. |
 | Tab 2 layout | Grouped toolbar: **Axis Values** (apply / recalculate), **Axis Presets** (Save JSON, Load JSON, Load .jrp) and **JMP Graph Builder** (opens a live, editable Graph Builder with the current axis values). |
 | Default ±Ref | Configurable **+ Ref / − Ref** in the Tab 2 *Defaults*, saved as `defaults.ref_line_plus/minus`. Used whenever a parameter's own Ref is empty: JMP ref lines (now also on DTR charts), PASS/WARN/FAIL status and red raw-data cells. *Apply ±Ref to all* copies it to every charted parameter. |
-| HTML report | New **Mode Registers** and **ODT** tabs; the **JMP Charts** tab is now a dropdown-driven side-by-side comparison workspace. See [HTML report](#-html-report). |
+| HTML report | New **Mode Registers** and **ODT** tabs; the **JMP Charts** tab is now a dropdown-driven side-by-side comparison workspace; **Raw Data** is now an explorer (status, heatmap, numeric filters, views, export) with a **Δ Drift Comparison** (e.g. Boot → Run RMT). See [HTML report](#-html-report). |
 | Tab 3 | *Open HTML Report* button. |
 
 ---
@@ -334,7 +334,8 @@ The HTML report and the native PPT are written in every stage that parses logs.
 | **Mode Registers** | Final per-rank DDR5 MR values (from *SAGV Finalization*), JEDEC decodes (CL, Ron, VrefDQ/CA/CS, RTT_*, ODTL), amber = changed by training vs the JEDEC-reset value, bold = differs between ranks, filters, and a **cross-log MR diff** |
 | **ODT** | DIMM ODT summary (RonUp/Dn, **RTT_WR**, NomWr, NomRd, Park, ParkDqs, CA/CS groups), CPU read ODT, per-rank ODT decoded from MR32–36, ODT latency offsets, BIOS ODT inputs, and a **cross-log ODT matrix** |
 | **JMP Charts** | Comparison workspace. Every panel has a chart dropdown; set 1–3 panels per row, add or remove panels, reset. Pre-filled with every chart, so it is never blank. |
-| Raw Data | Filterable table; cells weaker than ±Ref are highlighted red |
+| **Raw Data** | Explorer for every parsed row:<br>• **Frozen** File / Phase / Rank columns; short file labels (`BCRH 3200 G2`, full name on hover); a **Phase** column (Boot RMT / Run RMT for DTR).<br>• Parameter-grouped **− / +** headers.<br>• **Views:** Margins / Window width / Slack vs Ref.<br>• Per-row **Status** (PASS / WARN / FAIL), **Worst** parameter and **Min slack**.<br>• **Heatmap** plus **red** (below ±Ref) and **amber** (inside a selectable warn band, default 2× Ref) cells.<br>• **Numeric filters** (`<15`, `>=20`, `10..20`, compared on \|margin\|), *Show: All / WARN+FAIL / FAIL*, search, sort, 25 / 50 / 100 / All rows.<br>• **Columns** menu (constant parameters such as RecEnDelay ±32 are hidden by default).<br>• **Copy for Excel** and **CSV** export of the filtered view. |
+| **Δ Drift Comparison** (Raw Data tab) | Compare any **A → B**: Phase (Boot → Run RMT, the DTR default), file group (BCRH vs BHRC), frequency, gear or file. Gives a per-rank **Δ = \|B\| − \|A\|** table (per side or window width, red = margin lost), per-parameter mean and worst Δ, a **Top-10 margin losses** list, and **Δ CSV** export. |
 
 ---
 
