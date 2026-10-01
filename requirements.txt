@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# RMT Margin Analysis Tool - Python dependencies
+# MarginIQ (RMT Margin Analysis Tool) - Python dependencies
 #
 # Installed into the local .venv by setup.bat. Versions are pinned so every
 # machine reproduces the same, validated environment.

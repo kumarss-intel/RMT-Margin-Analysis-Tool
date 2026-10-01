@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-RMT Log Pipeline Runner - User-Friendly Wrapper
+MarginIQ RMT Log Pipeline Runner - User-Friendly Wrapper
 
-Simplifies running the RMT extraction pipeline with preset workflows and interactive menus.
+Simplifies running the MarginIQ extraction pipeline (rmt_log_pipeline.py)
+with preset workflows and interactive menus.
 """
 
 import os
@@ -13,6 +14,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from rmt_project import TOOL_NAME, TOOL_SUBTITLE, TOOL_VERSION
 
 # Configuration
 HERE = Path(__file__).resolve().parent
@@ -305,6 +307,7 @@ def interactive_menu():
     """Show interactive menu for user to select stage and input."""
     
     print("\n" + "="*60)
+    print(f"  {TOOL_NAME} {TOOL_VERSION} — {TOOL_SUBTITLE}")
     print("  RMT Log Pipeline Runner - User Friendly Interface")
     print("="*60 + "\n")
     
@@ -613,7 +616,7 @@ def simple_preset():
     """Simple preset commands without menu."""
     
     print("\n" + "="*60)
-    print("  RMT Log Pipeline - Quick Start")
+    print(f"  {TOOL_NAME} {TOOL_VERSION} — RMT Log Pipeline Quick Start")
     print("="*60 + "\n")
     
     input_path = input("📁 Input folder/file path: ").strip()
@@ -671,7 +674,7 @@ def cli_quick_commands():
     """Display quick copy-paste command examples."""
     
     print("\n" + "="*60)
-    print("  Quick Copy-Paste Commands")
+    print(f"  {TOOL_NAME} {TOOL_VERSION} — Quick Copy-Paste Commands")
     print("="*60 + "\n")
     
     print("Stage 1: CSV Only")
@@ -844,6 +847,7 @@ def main():
     
     if len(sys.argv) > 1:
         if sys.argv[1] == "--help":
+            print(f"{TOOL_NAME} {TOOL_VERSION} — {TOOL_SUBTITLE}")
             print("RMT Log Pipeline Runner")
             print("=" * 60)
             print()
@@ -874,7 +878,6 @@ def main():
             print("       Axis scale / tick increment / reference lines are read")
             print("       from jmp_axis_settings.json — edit that file to customise.")
             print("       Outputs: above + jmp_charts/<Param>.png  (one per parameter)")
-            print("                        jmp_charts/RMT_Dashboard.png")
             print("                        rmt_jmp_charts.jsl  (reusable JMP script)")
             print()
             print("  4  CSV + Excel + JMP Charts + PPT  ← DEFAULT")
