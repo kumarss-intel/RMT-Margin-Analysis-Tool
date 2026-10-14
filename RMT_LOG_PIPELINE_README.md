@@ -294,6 +294,14 @@ In `--outdir`, the script creates:
   Margins / Window width / Slack-vs-Ref views, Copy / CSV export, and an A → B **Δ Drift
   Comparison**, e.g. Boot → Run RMT, BCRH vs BHRC or 4800 vs 5200).
   The report needs no jQuery / DataTables; only Bootstrap and Chart.js are loaded from the CDN.
+  The **Platform** tab opens with a **DRAM Die & Process Node** card per unique part number:
+  - Step 1: part-number decode and node identification.
+  - Step 2: node metrics (geometry, capacitor, lithography, transistor / refresh, interface).
+
+  Each value is labelled *Log (SPD)*, *JEDEC*, *Published*, *Industry consensus*,
+  *Engineering Estimate* or *Not publicly disclosed*, with source links. The data comes from
+  `dram_nodes.json`. `RMT_Summary.pptx` gets the same content as two slides per part
+  number, after *Test Configuration*, with the sources in the slide notes.
 
 6. `rmt_metadata.json`
 - Tool version, project, training steps, platform info and MR / ODT data

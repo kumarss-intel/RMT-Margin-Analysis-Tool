@@ -33,6 +33,7 @@ from typing import Any, Iterable
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from rmt_dram import decode_spd_ddr5, dram_die_reports
 from rmt_project import (
     BUILTIN_PARAM_ALIASES,
     TOOL_NAME,
@@ -1719,6 +1720,7 @@ def parse_platform_info(text: str, source_name: str) -> dict[str, Any]:
                 d.setdefault("part_number", pn or None)
             except Exception:
                 d.setdefault("part_number", None)
+            d["spd_ext"] = decode_spd_ddr5(spd)
         else:
             d.setdefault("manufacturer", None)
             d.setdefault("part_number", None)
@@ -2394,6 +2396,116 @@ def build_ppt_professional(
                          bg=rbg, fg=GRAY, sz=8)
 
     # ==============================================================
+    # DRAM die & process-node slides (one pair per unique part number)
+    # ==============================================================
+    BASIS_FG = {
+        "Log (SPD)": PASS_FG, "Part number": PASS_FG, "JEDEC": RGBColor(0x5B, 0x21, 0xB6),
+        "Published": BLUE, "Industry consensus": RGBColor(0x0E, 0x74, 0x90),
+        "Community-sourced": WARN_FG, "Engineering Estimate": WARN_FG,
+    }
+
+    def _rows_table(slide, rows, left, top, width, height, widths, prebuilt=None) -> None:
+        body = [(None, r) for r in rows] if prebuilt is None else prebuilt
+        n = len(body) + 1
+        tbl = slide.shapes.add_table(n, 3, left, top, width, height).table
+        for ci, cw in enumerate(widths):
+            tbl.columns[ci].width = cw
+        set_hdr_row(tbl, ["Item", "Value", "Basis"])
+        for ri, (sec, r) in enumerate(body, 1):
+            if r is None:     # section header row
+                c = tbl.cell(ri, 0); c.merge(tbl.cell(ri, 2))
+                set_cell(c, sec, bg=ACCENT, fg=NAVY, bold=True, sz=8, align=PP_ALIGN.LEFT)
+                continue
+            rbg = ALT if ri % 2 == 0 else None
+            set_cell(tbl.cell(ri, 0), r["field"], bg=rbg, fg=NAVY, bold=True, sz=7,
+                     align=PP_ALIGN.LEFT)
+            set_cell(tbl.cell(ri, 1), r["value"], bg=rbg, fg=NAVY, sz=7, align=PP_ALIGN.LEFT)
+            set_cell(tbl.cell(ri, 2), r["basis"], bg=rbg,
+                     fg=BASIS_FG.get(r["basis"], GRAY), bold=True, sz=7)
+            for ci in range(3):
+                tbl.cell(ri, ci).text_frame.word_wrap = True
+                tbl.cell(ri, ci).margin_top = tbl.cell(ri, ci).margin_bottom = Inches(0.02)
+
+    def _sources_notes(slide, groups) -> None:
+        lines = []
+        for label, rows in groups:
+            for r in rows:
+                for url in r.get("sources") or []:
+                    lines.append(f'{label} / {r["field"]}: {url}')
+        if lines:
+            slide.notes_slide.notes_text_frame.text = "Sources:\n" + "\n".join(
+                dict.fromkeys(lines))
+
+    def _footer(slide, text: str) -> None:
+        fb = slide.shapes.add_textbox(Inches(0.3), Inches(6.95), Inches(12.7), Inches(0.45))
+        fb.text_frame.word_wrap = True
+        rn = fb.text_frame.paragraphs[0].add_run(); rn.text = text
+        rn.font.size = Pt(7); rn.font.italic = True; rn.font.color.rgb = GRAY
+
+    for rep in dram_die_reports(platform_infos) if platform_infos else []:
+        sub = (f'{rep.get("manufacturer") or ""}  |  die revision {rep.get("die_rev") or "?"}  |  '
+               f'{rep.get("node_name") or "process node not in knowledge base"}')
+        foot = ("Basis: Log (SPD) = decoded from this run's SPD dump; JEDEC = JESD79-5; "
+                "Published / Industry consensus = public sources (URLs in slide notes and "
+                "RMT_Report.html Platform tab); Engineering Estimate = not published, "
+                "roadmap-based. " + (rep.get("disclaimer") or ""))
+
+        s_a = prs.slides.add_slide(blank)
+        add_banner(s_a, f'DRAM Die & Process Node \u2014 {rep["part_number"]}', sub)
+        dec = rep.get("mpn_decode")
+        has_dec = bool(dec and dec.get("fields"))
+        w_left = Inches(7.6 if has_dec else 12.8)
+        _rows_table(s_a, rep["step1"], Inches(0.25), Inches(1.25), w_left,
+                    Inches(0.3 * (len(rep["step1"]) + 1)),
+                    [Inches(1.7), w_left - Inches(2.9), Inches(1.2)])
+        if has_dec:
+            n = len(dec["fields"]) + 1
+            dtbl = s_a.shapes.add_table(n, 3, Inches(8.05), Inches(1.25), Inches(5.0),
+                                        Inches(0.26 * n)).table
+            for ci, cw in enumerate([Inches(1.6), Inches(0.7), Inches(2.7)]):
+                dtbl.columns[ci].width = cw
+            set_hdr_row(dtbl, [f'{dec["vendor"]} {dec.get("kind", "")} MPN field', "Code",
+                               "Meaning"])
+            for ri, f in enumerate(dec["fields"], 1):
+                rbg = ALT if ri % 2 == 0 else None
+                set_cell(dtbl.cell(ri, 0), f["label"], bg=rbg, sz=7, align=PP_ALIGN.LEFT)
+                set_cell(dtbl.cell(ri, 1), f["code"], bg=rbg, fg=BLUE, bold=True, sz=7)
+                set_cell(dtbl.cell(ri, 2), f'{f["meaning"]} [{f.get("basis", "")}]', bg=rbg,
+                         fg=NAVY if f.get("known") else GRAY, sz=7, align=PP_ALIGN.LEFT)
+                for ci in range(3):
+                    dtbl.cell(ri, ci).text_frame.word_wrap = True
+        _footer(s_a, foot)
+        _sources_notes(s_a, [("Step 1", rep["step1"]),
+                             ("MPN decode", [{"field": "nomenclature",
+                                              "sources": (dec or {}).get("sources")}])])
+
+        if rep["sections"]:
+            s_b = prs.slides.add_slide(blank)
+            add_banner(s_b, f'Process Node Metrics \u2014 {rep["part_number"]}',
+                       rep.get("family_name") or sub)
+            secs = rep["sections"]
+            # Balance the sections over two columns by row count.
+            total = sum(len(s["rows"]) + 1 for s in secs)
+            cols: list[list[dict]] = [[], []]
+            acc_n = 0
+            for s in secs:
+                cols[0 if acc_n < total / 2 else 1].append(s)
+                acc_n += len(s["rows"]) + 1
+            for ci, col in enumerate(cols):
+                if not col:
+                    continue
+                body = []
+                for s in col:
+                    body.append((s["title"], None))
+                    body.extend((s["title"], r) for r in s["rows"])
+                left = Inches(0.25 + ci * 6.5)
+                _rows_table(s_b, None, left, Inches(1.25), Inches(6.3),
+                            Inches(0.24 * (len(body) + 1)),
+                            [Inches(1.75), Inches(3.45), Inches(1.1)], prebuilt=body)
+            _footer(s_b, foot)
+            _sources_notes(s_b, [(s["title"], s["rows"]) for s in secs])
+
+    # ==============================================================
     # Slide 3: Training Steps Summary (if available)
     # ==============================================================
     if training_steps:
@@ -2791,13 +2903,124 @@ def _build_training_steps_html(training_steps: list[dict] | None) -> list[str]:
 
 
 
+_BASIS_STYLE: dict[str, str] = {
+    "Log (SPD)":              "background:#065F46",
+    "Part number":            "background:#047857",
+    "JEDEC":                  "background:#6D28D9",
+    "Published":              "background:#0071C5",
+    "Industry consensus":     "background:#0E7490",
+    "Community-sourced":      "background:#B45309",
+    "Engineering Estimate":   "background:#D97706",
+    "Not publicly disclosed": "background:#6B7280",
+    "Not available":          "background:#9CA3AF",
+}
+
+
+def _basis_badge(basis: str) -> str:
+    style = _BASIS_STYLE.get(basis, "background:#6B7280")
+    return (f'<span class="badge" style="{style};font-size:.72rem;white-space:nowrap">'
+            f'{_html.escape(basis)}</span>')
+
+
+def _sources_html(sources: list[str]) -> str:
+    links = []
+    for i, url in enumerate(sources or [], 1):
+        u = _html.escape(url, quote=True)
+        if url.startswith(("http://", "https://")):
+            links.append(f'<a href="{u}" target="_blank" rel="noopener" title="{u}">[{i}]</a>')
+        else:
+            links.append(f'<span title="{u}">[{i}]</span>')
+    return " ".join(links)
+
+
+def _dram_rows_table(rows: list[dict]) -> str:
+    out = ['<table class="table table-sm table-bordered align-middle mb-2" '
+           'style="font-size:.82rem"><thead class="table-light"><tr>'
+           '<th style="width:24%">Item</th><th>Value</th>'
+           '<th style="width:12%">Basis</th><th style="width:8%">Source</th>'
+           '</tr></thead><tbody>']
+    for r in rows:
+        note = (f'<div class="small text-muted fst-italic">{_html.escape(r["note"])}</div>'
+                if r.get("note") else "")
+        out.append(
+            f'<tr><td class="fw-semibold">{_html.escape(r["field"])}</td>'
+            f'<td>{_html.escape(r["value"])}{note}</td>'
+            f'<td>{_basis_badge(r["basis"])}</td>'
+            f'<td class="small">{_sources_html(r.get("sources") or [])}</td></tr>'
+        )
+    out.append('</tbody></table>')
+    return "".join(out)
+
+
+def _build_dram_node_html(platform_infos: list[dict] | None) -> list[str]:
+    """DRAM die / process-node cards (one per unique part number)."""
+    reports = dram_die_reports(platform_infos)
+    if not reports:
+        return []
+    parts: list[str] = []
+    for rep in reports:
+        title = _html.escape(rep["part_number"])
+        node = _html.escape(rep.get("node_name") or "process node not in knowledge base")
+        parts.append('<div class="section-card mb-4">')
+        parts.append(
+            f'<h6 class="fw-bold text-primary mb-1">&#x1F9EC; DRAM Die &amp; Process Node '
+            f'&mdash; {title}</h6>'
+            f'<div class="small text-muted mb-3">{_html.escape(rep.get("manufacturer") or "")} '
+            f'&middot; die revision <b>{_html.escape(rep.get("die_rev") or "?")}</b> &middot; '
+            f'{node} &middot; slots: {_html.escape(", ".join(rep.get("slots") or []))}</div>'
+        )
+        parts.append('<div class="fw-semibold mb-1">Step 1 &mdash; Part number decoding &amp; '
+                     'node identification</div>')
+        parts.append(_dram_rows_table(rep["step1"]))
+
+        dec = rep.get("mpn_decode")
+        if dec and dec.get("fields"):
+            parts.append(
+                f'<details class="mb-3" open><summary class="small fw-semibold">'
+                f'{_html.escape(dec["vendor"])} {_html.escape(dec.get("kind", ""))} '
+                f'part-number field decode {_sources_html(dec.get("sources") or [])}'
+                f'</summary><table class="table table-sm table-bordered mt-2 mb-0" '
+                f'style="font-size:.8rem"><thead class="table-light"><tr><th>Field</th>'
+                f'<th>Code</th><th>Meaning</th><th>Basis</th></tr></thead><tbody>'
+            )
+            for f in dec["fields"]:
+                cls = "" if f.get("known") else ' class="text-muted fst-italic"'
+                parts.append(f'<tr><td>{_html.escape(f["label"])}</td>'
+                             f'<td class="font-monospace fw-bold">{_html.escape(f["code"])}</td>'
+                             f'<td{cls}>{_html.escape(f["meaning"])}</td>'
+                             f'<td>{_basis_badge(f.get("basis", ""))}</td></tr>')
+            parts.append('</tbody></table></details>')
+
+        if rep["sections"]:
+            fam = rep.get("family_name")
+            parts.append('<div class="fw-semibold mb-1">Step 2 &mdash; Node metric reconstruction'
+                         + (f' <span class="text-muted fw-normal">({_html.escape(fam)})</span>'
+                            if fam else "") + '</div>')
+            parts.append('<div class="row g-3">')
+            for sec in rep["sections"]:
+                parts.append(f'<div class="col-xl-6"><div class="small fw-bold text-dark mb-1">'
+                             f'{_html.escape(sec["title"])}</div>'
+                             f'{_dram_rows_table(sec["rows"])}</div>')
+            parts.append('</div>')
+        legend = rep.get("basis_legend") or {}
+        if legend or rep.get("disclaimer"):
+            parts.append('<div class="small text-muted mt-2">')
+            if rep.get("disclaimer"):
+                parts.append(f'<div class="mb-1">{_html.escape(rep["disclaimer"])}</div>')
+            parts.append(" &nbsp; ".join(f'{_basis_badge(k)} {_html.escape(v)}'
+                                         for k, v in legend.items()))
+            parts.append('</div>')
+        parts.append('</div>')
+    return parts
+
+
 def _build_platform_html_section(platform_infos: list[dict] | None) -> list[str]:
     """Return a list of HTML strings for the Platform tab body."""
     if not platform_infos:
         return ['<div class="alert alert-info m-4">No platform info available '
                 '(log files did not contain MRC board/DIMM output).</div>']
 
-    parts: list[str] = []
+    parts: list[str] = _build_dram_node_html(platform_infos)
     for pi in platform_infos:
         src   = pi.get("source_file", "Unknown")
         board = pi.get("board") or "N/A"

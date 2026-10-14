@@ -1,0 +1,220 @@
+{
+  "_comment": [
+    "MarginIQ DRAM die / process-node knowledge base (read by rmt_dram.py).",
+    "Every value carries a 'basis' and (where public) 'sources'. Allowed basis labels:",
+    "Published, Industry consensus, Community-sourced, Engineering Estimate, Not publicly disclosed, JEDEC.",
+    "Values decoded from the run's own SPD dump are added at run time with basis 'Log (SPD)'.",
+    "Never add an unlabelled guess. Do not cite confidential/NDA vendor datasheets here.",
+    "To add a part: (1) add/extend a decoder under vendors.<Vendor>.decoders (regex with named groups;",
+    "the group 'die_rev' is used for the node lookup), (2) add a 'dies' entry, (3) point it to a node_families entry."
+  ],
+  "disclaimer": "Vendors do not publish per-part process-node geometry; die-revision letters are not publicly mapped to node names. Only values labelled Log (SPD), JEDEC or Published are facts; Engineering Estimates are roadmap-based and must not be used as specification limits.",
+  "basis_legend": {
+    "Log (SPD)": "decoded from this run's SPD dump",
+    "JEDEC": "JESD79-5 / JESD400-5 standard value",
+    "Published": "vendor press release or analyst (TechInsights) public article",
+    "Industry consensus": "consistent across public analyst sources",
+    "Engineering Estimate": "not published; derived from DRAM scaling practice",
+    "Not publicly disclosed": "no public source"
+  },
+
+  "jedec": {
+    "DDR5": {
+      "refresh": [
+        {
+          "field": "tREFI - normal refresh (Tcase <= 85 C)",
+          "value": "3.9 us (8,192 REF commands per 32 ms)",
+          "basis": "JEDEC",
+          "sources": [
+            "https://www.farnell.com/datasheets/4594004.pdf",
+            "https://en.wikipedia.org/wiki/DDR5_SDRAM"
+          ]
+        },
+        {
+          "field": "tREFI - elevated temperature (85 C < Tcase <= 95 C)",
+          "value": "1.95 us (8,192 REF commands per 16 ms, 2x refresh rate)",
+          "basis": "JEDEC",
+          "sources": [
+            "https://www.farnell.com/datasheets/4594004.pdf",
+            "https://en.wikipedia.org/wiki/DDR5_SDRAM"
+          ]
+        }
+      ]
+    }
+  },
+
+  "vendors": {
+    "Samsung": {
+      "aliases": ["Samsung", "Samsung Electronics"],
+      "decoders": [
+        {
+          "kind": "DDR5 module",
+          "regex": "^(?P<brand>M)(?P<form>\\d{3})(?P<gen>R)(?P<depth>\\d+G)(?P<org>[A-Z])(?P<cfg>\\d)(?P<die_rev>[A-Z])(?P<package>[A-Z])(?P<pcb>\\d)(?:-(?P<suffix>[A-Z0-9]+))?$",
+          "sources": [],
+          "fields": {
+            "brand":   {"label": "Prefix", "basis": "Industry consensus",
+                        "codes": {"M": "Samsung memory module"}},
+            "form":    {"label": "Module form factor family", "basis": "Engineering Estimate",
+                        "codes": {"425": "DDR5 SO-DIMM",
+                                  "435": "DDR5 clocked SO-DIMM (CSODIMM, on-module clock driver) - matches SPD byte 3"}},
+            "gen":     {"label": "DRAM generation", "basis": "Industry consensus",
+                        "codes": {"R": "DDR5 (cross-checked with SPD byte 2)"}},
+            "depth":   {"label": "Module depth", "basis": "Engineering Estimate",
+                        "codes": {"1G": "1G x 64b (8 GB)", "2G": "2G x 64b (16 GB)",
+                                  "4G": "4G x 64b (32 GB) - cross-check with SPD-derived module capacity",
+                                  "8G": "8G x 64b (64 GB)"}},
+            "org":     {"label": "Organisation code", "unknown": "Not decoded - official legend not publicly available"},
+            "cfg":     {"label": "Configuration code", "unknown": "Not decoded - official legend not publicly available"},
+            "die_rev": {"label": "Component (die) revision", "basis": "Industry consensus",
+                        "codes": {"*": "{code}-die - cross-check with SPD byte 554 (DRAM stepping)"}},
+            "package": {"label": "Package code", "unknown": "Not decoded - official legend not publicly available"},
+            "pcb":     {"label": "Module PCB revision", "basis": "Engineering Estimate",
+                        "codes": {"*": "PCB revision {code}"}},
+            "suffix":  {"label": "Temperature / power / speed / option suffix",
+                        "unknown": "Not decoded - official legend not publicly available (speed bin is taken from SPD instead)"}
+          }
+        },
+        {
+          "kind": "DDR5 component",
+          "regex": "^(?P<brand>K4)(?P<family>R[A-Z]{2})(?P<org>\\d{3})(?P<pkg>[A-Z])(?P<die_rev>[A-Z])(?:-(?P<suffix>[A-Z0-9]+))?$",
+          "sources": [],
+          "fields": {
+            "brand":   {"label": "Prefix", "basis": "Industry consensus",
+                        "codes": {"K4": "Samsung DRAM component"}},
+            "family":  {"label": "Product family", "unknown": "Not decoded - official legend not publicly available"},
+            "org":     {"label": "Density / organisation code", "unknown": "Not decoded - official legend not publicly available"},
+            "pkg":     {"label": "Package / interface code", "unknown": "Not decoded - official legend not publicly available"},
+            "die_rev": {"label": "Component (die) revision", "basis": "Engineering Estimate",
+                        "codes": {"*": "{code}-die - cross-check with SPD byte 554 (DRAM stepping)"}},
+            "suffix":  {"label": "Package / temperature / speed suffix",
+                        "unknown": "Not decoded - official legend not publicly available"}
+          }
+        }
+      ]
+    }
+  },
+
+  "dies": [
+    {
+      "vendor": "Samsung",
+      "memory_type": "DDR5",
+      "die_density_gb": 16,
+      "die_rev": "E",
+      "family": "samsung-ddr5-16gb-1a-1b",
+      "node": {
+        "value": "Not publicly disclosed by Samsung for the E-die. Samsung 16Gb DDR5 nodes publicly in mass production: 14nm EUV (D1a, Oct-2021) and 12nm-class (D1b, May-2023)",
+        "basis": "Not publicly disclosed",
+        "note": "Samsung press releases name nodes, not die letters; no public TechInsights/Samsung source maps 'E-die' to D1a or D1b.",
+        "sources": [
+          "http://web.archive.org/web/20211012025210/https://news.samsung.com/global/samsung-starts-mass-production-of-most-advanced-14nm-euv-ddr5-dram",
+          "http://web.archive.org/web/20230518040054/https://news.samsung.com/global/samsung-electronics-announces-most-advanced-12nm-class-ddr5-dram-has-started-mass-production"
+        ]
+      },
+      "candidates": [
+        {"name": "14nm EUV (D1a)", "mass_production": "2021-10"},
+        {"name": "12nm-class (D1b)", "mass_production": "2023-05"}
+      ]
+    }
+  ],
+
+  "node_families": {
+    "samsung-ddr5-16gb-1a-1b": {
+      "name": "Samsung 16Gb DDR5 - candidate nodes 14nm EUV (D1a) / 12nm-class (D1b)",
+      "sections": [
+        {
+          "key": "geometry",
+          "title": "1. Geometric Scaling & Pitch Metrics",
+          "rows": [
+            {"field": "Node feature-size class",
+             "value": "D1a: 14 nm (EUV). D1b: 12 nm-class",
+             "basis": "Published",
+             "sources": [
+               "http://web.archive.org/web/20211012025210/https://news.samsung.com/global/samsung-starts-mass-production-of-most-advanced-14nm-euv-ddr5-dram",
+               "http://web.archive.org/web/20230518040054/https://news.samsung.com/global/samsung-electronics-announces-most-advanced-12nm-class-ddr5-dram-has-started-mass-production"]},
+            {"field": "Active-area half-pitch",
+             "value": "Samsung value not publicly disclosed. Industry range for D1a/D1b: 12-14 nm feature size",
+             "basis": "Industry consensus",
+             "sources": ["https://semiwiki.com/forum/threads/chinas-cxmts-ddr5-reveals-3-year-technology-gap.23270/"]},
+            {"field": "Cell factor",
+             "value": "6F2 (1T1C) - kept by all DRAM makers through D1a/D1b/D1c",
+             "basis": "Industry consensus",
+             "sources": ["https://semiengineering.com/micron-d1%CE%B1-the-most-advanced-node-yet-on-dram/"]},
+            {"field": "Peer reference (Micron D1a, TechInsights)",
+             "value": "Cell 1,672 nm2, design rule 14.4 nm, bit density 0.315 Gb/mm2 (8Gb DDR4 die) - shows node name != layout F",
+             "basis": "Published",
+             "sources": ["https://semiengineering.com/micron-d1%CE%B1-the-most-advanced-node-yet-on-dram/"]},
+            {"field": "Wordline / bitline pitch",
+             "value": "Not publicly disclosed (TechInsights paywalled). Engineering Estimate: 6F2 layout gives WL pitch = 2F, BL pitch = 3F; F derived from TechInsights cell sizes is larger than the node name (Micron D1a: 1,672 nm2 / 6 -> F ~ 16.7 nm -> WL ~ 33 nm, BL ~ 50 nm)",
+             "basis": "Engineering Estimate",
+             "sources": ["https://semiengineering.com/micron-d1%CE%B1-the-most-advanced-node-yet-on-dram/"]}
+          ]
+        },
+        {
+          "key": "capacitor",
+          "title": "2. Capacitor Structural & Material Parameters",
+          "rows": [
+            {"field": "Capacitor aspect ratio",
+             "value": "Not publicly disclosed. Engineering Estimate: high-aspect-ratio cylinder/pillar capacitor, on the order of 50:1 or higher at 1x-nm DRAM nodes",
+             "basis": "Engineering Estimate"},
+            {"field": "Dielectric stack",
+             "value": "D1b (12nm-class): Samsung states a 'new high-k material that helps increase cell capacitance' (material not named)",
+             "basis": "Published",
+             "sources": ["http://web.archive.org/web/20230518040054/https://news.samsung.com/global/samsung-electronics-announces-most-advanced-12nm-class-ddr5-dram-has-started-mass-production"]},
+            {"field": "Dielectric stack composition",
+             "value": "Not publicly disclosed. Engineering Estimate: ZrO2-based laminate (ZrO2/Al2O3/ZrO2 'ZAZ'-type) - the standard DRAM capacitor dielectric family at sub-20 nm nodes",
+             "basis": "Engineering Estimate"},
+            {"field": "Target cell capacitance (Cs)",
+             "value": "Not publicly disclosed. Engineering Estimate: ~10 fF-class per cell",
+             "basis": "Engineering Estimate"}
+          ]
+        },
+        {
+          "key": "litho",
+          "title": "3. Lithography and Fabrication Framework",
+          "rows": [
+            {"field": "Lithography - D1a (14nm)",
+             "value": "EUV, 5 EUV layers ('a feat not possible with the conventional ArF process')",
+             "basis": "Published",
+             "sources": ["http://web.archive.org/web/20211012025210/https://news.samsung.com/global/samsung-starts-mass-production-of-most-advanced-14nm-euv-ddr5-dram"]},
+            {"field": "Lithography - D1b (12nm-class)",
+             "value": "EUV layer count not stated in Samsung's 12nm-class release",
+             "basis": "Not publicly disclosed",
+             "sources": ["http://web.archive.org/web/20230518040054/https://news.samsung.com/global/samsung-electronics-announces-most-advanced-12nm-class-ddr5-dram-has-started-mass-production"]},
+            {"field": "Mask count / complexity vs previous node",
+             "value": "Mask count not disclosed. Published gains vs previous generation - D1a: ~20% wafer productivity, ~20% lower power; D1b: up to 20% wafer productivity, up to 23% lower power",
+             "basis": "Published",
+             "sources": [
+               "http://web.archive.org/web/20211012025210/https://news.samsung.com/global/samsung-starts-mass-production-of-most-advanced-14nm-euv-ddr5-dram",
+               "http://web.archive.org/web/20230518040054/https://news.samsung.com/global/samsung-electronics-announces-most-advanced-12nm-class-ddr5-dram-has-started-mass-production"]}
+          ]
+        },
+        {
+          "key": "transistor",
+          "title": "4. Transistor Architecture & Electrical Characteristics",
+          "rows": [
+            {"field": "Cell transistor architecture",
+             "value": "BCAT (buried-channel array transistor, buried word line), 6F2 1T+1C",
+             "basis": "Industry consensus",
+             "sources": ["https://semiengineering.com/micron-d1%CE%B1-the-most-advanced-node-yet-on-dram/"]},
+            {"field": "Periphery logic (HKMG)",
+             "value": "Not disclosed for this die. Samsung published HKMG for its 512GB DDR5 TSV module (16Gb dies, 2021) and GDDR6 (2018)",
+             "basis": "Not publicly disclosed",
+             "sources": ["http://web.archive.org/web/20211223040551/https://news.samsung.com/global/samsung-develops-industrys-first-hkmg-based-ddr5-memory-ideal-for-bandwidth-intensive-advanced-computing-applications"]}
+          ]
+        },
+        {
+          "key": "interface",
+          "title": "5. Interface & Application Alignment",
+          "rows": [
+            {"field": "Die-family max data rate (vendor)",
+             "value": "Up to 7,200 MT/s (stated for both 14nm EUV and 12nm-class DDR5)",
+             "basis": "Published",
+             "sources": [
+               "http://web.archive.org/web/20211012025210/https://news.samsung.com/global/samsung-starts-mass-production-of-most-advanced-14nm-euv-ddr5-dram",
+               "http://web.archive.org/web/20230518040054/https://news.samsung.com/global/samsung-electronics-announces-most-advanced-12nm-class-ddr5-dram-has-started-mass-production"]}
+          ]
+        }
+      ]
+    }
+  }
+}

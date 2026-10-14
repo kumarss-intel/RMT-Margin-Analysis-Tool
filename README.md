@@ -377,6 +377,23 @@ code change is needed.
 `TOOL_NAME`, `TOOL_SUBTITLE` and `TOOL_VERSION` are defined once and used by the GUI, CLI,
 HTML and PPT.
 
+### DRAM die / process-node data — [`dram_nodes.json`](dram_nodes.json)
+
+The HTML **Platform** tab and the `RMT_Summary.pptx` deck show a **DRAM Die & Process Node**
+card for each unique DIMM part number. It is built by [`rmt_dram.py`](rmt_dram.py) from two
+sources, and every value carries a basis label:
+
+- **Log (SPD)**: decoded from the run's own SPD dump (JESD400-5). This covers DRAM stepping
+  (byte 554), die density and package, x-width, VDD/VDDQ/VPP, fastest JEDEC bin and
+  CL-tRCD-tRP, supported CLs, tRFC1/2/sb, and module organisation.
+- **`dram_nodes.json`**: vendor part-number nomenclature, die → node mapping and node metrics,
+  each tagged *Published*, *Industry consensus*, *JEDEC*, *Engineering Estimate* or *Not
+  publicly disclosed*, with source URLs.
+
+The source URLs appear in the HTML as `[n]` links and in the PPT slide notes. To cover a new
+part, add a decoder regex, a `dies` entry and a `node_families` entry. Never add an
+unlabelled value, and never cite NDA datasheets.
+
 ---
 
 ## 📁 Output structure
@@ -424,6 +441,7 @@ output_dir/
 | [scripts/make_icon.py](scripts/make_icon.py) | Regenerates `assets/marginiq.ico` / `.png` |
 | [scripts/check_proxy.py](scripts/check_proxy.py) | Proxy pre-flight check run by `setup.bat` |
 | [projects.json](projects.json) | Project registry |
+| [dram_nodes.json](dram_nodes.json) | DRAM part-number / die / process-node knowledge base (Platform tab + PPT) |
 | [jmp_axis_settings.json](jmp_axis_settings.json) | Axis scales and default ±Ref |
 | [requirements.txt](requirements.txt) | Pinned Python dependencies |
 

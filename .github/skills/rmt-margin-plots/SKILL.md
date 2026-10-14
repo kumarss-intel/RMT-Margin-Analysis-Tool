@@ -23,6 +23,7 @@ section "Agentic mode (GitHub Copilot)".
 | `jmp_axis_settings.json` | Per-parameter Y-axis min/max/inc/ref-line config + default `ref_line_plus` / `ref_line_minus` |
 | `projects.json` | Project registry (NVL, WCL, ...) used by `--project` |
 | `rmt_project.py` | Branding / version / project-registry helper (imported by the CLI and GUI) |
+| `rmt_dram.py` / `dram_nodes.json` | DDR5 SPD decode + DRAM part-number / die / process-node knowledge base (Platform tab + PPT) |
 
 All paths above are relative to the repository root.
 
@@ -61,7 +62,9 @@ writes the full CSV + Excel + HTML + native PPT set.
 `--ppt-template <pptx>` (optional) styles the JMP deck from an existing template.
 
 `RMT_Report.html` tabs: Overview, Frequency, Parameters, RunTemp, Training Steps,
-Platform, **Mode Registers** (final per-rank DDR5 MR table with JEDEC decodes,
+Platform (opens with a **DRAM Die & Process Node** card per part number: SPD-decoded
+stepping / speed bin / voltages / tRFC plus labelled node metrics from `dram_nodes.json`;
+the same content is in two `RMT_Summary.pptx` slides), **Mode Registers** (final per-rank DDR5 MR table with JEDEC decodes,
 training-changed and rank-varying MRs highlighted, cross-log MR diff), **ODT**
 (DIMM ODT summary — RTT_WR / RTT_NOM_WR / RTT_NOM_RD / RTT_PARK / DQS_RTT_PARK /
 CA / CS / Ron — CPU read ODT, per-rank ODT decoded from MR32-36, ODT latency
@@ -76,6 +79,10 @@ To answer MR / ODT questions ("what RTT_WR did training pick?") without opening
 the HTML, read `rmt_metadata.json` → `platform_infos[*].mr_odt.snapshots[*]`
 (`final_mrs`, `init_mrs`, `odt_summary`, `cpu_read_odt`, `odtl`) and decode MRs
 with `rmt_log_pipeline.decode_ddr5_mr(mr, value)`.
+
+For DRAM die / process-node questions, use `rmt_dram.dram_die_reports(platform_infos)`
+(SPD facts are in `platform_infos[*].dimms[*].spd_ext`). Report each value with its `basis`
+label. Never present an *Engineering Estimate* or *Not publicly disclosed* value as a fact.
 
 ### Project (platform)
 
