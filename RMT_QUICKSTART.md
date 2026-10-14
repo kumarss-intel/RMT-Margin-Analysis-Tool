@@ -2,9 +2,18 @@
 
 *Intel CCG CVE DDR5 RMT Margin Analysis Tool*
 
-📖 **See Also:** [Main README](README.md) · [Agentic mode](README.md#-agentic-mode-github-copilot) · [Full CLI reference](RMT_LOG_PIPELINE_README.md)
+📖 **See Also:** [Main README](README.md) · [Installation Guide](INSTALL.md) · [Agentic mode](README.md#-agentic-mode-github-copilot) · [Full CLI reference](RMT_LOG_PIPELINE_README.md)
 
 ## Step 0: One-time setup (everyone)
+
+**Before you start** (full details in the [Installation Guide](INSTALL.md)):
+
+- **Python 3.10+** (3.14 recommended) with *tcl/tk and IDLE*. Run `py -0p` and `where.exe python` first. If
+  `python` is not on `PATH`, or the install looks broken, follow [INSTALL.md › Python](INSTALL.md#1-python).
+  Reinstalling Python is usually the quickest fix.
+- **JMP Pro** (only for JMP charts / JMP PPT). It is **not available on lab machines**, so install MarginIQ
+  on your laptop. Get **JMP Pro** from **Company Portal** (search *JMP*). For licence errors, see
+  [INSTALL.md › JMP Pro](INSTALL.md#2-jmp-pro).
 
 Clone the repository (use `git clone` rather than Download ZIP, so `git pull` works later):
 

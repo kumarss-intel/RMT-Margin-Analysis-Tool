@@ -80,9 +80,18 @@ REM ---------------------------------------------------------------
 echo [1/6] Locating a Python 3.10+ interpreter...
 set "BASE_PY="
 
-call :try_python "C:\Program Files\Python314\python.exe"
-if not defined BASE_PY call :try_python "C:\Program Files\Python313\python.exe"
-if not defined BASE_PY call :try_python "C:\Program Files\Python312\python.exe"
+REM All-users installs first, then per-user installs (the python.org
+REM default, which is NOT added to PATH unless that box was ticked), then
+REM the Python Install Manager runtimes, then the py launcher and PATH.
+for %%V in (314 313 312 311 310) do (
+    if not defined BASE_PY call :try_python "%ProgramFiles%\Python%%V\python.exe"
+)
+for %%V in (314 313 312 311 310) do (
+    if not defined BASE_PY call :try_python "%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe"
+)
+for %%V in (3.14 3.13 3.12 3.11 3.10) do (
+    if not defined BASE_PY call :try_python "%LOCALAPPDATA%\Python\pythoncore-%%V-64\python.exe"
+)
 
 if not defined BASE_PY (
     for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
@@ -98,10 +107,19 @@ if not defined BASE_PY (
 
 if not defined BASE_PY (
     echo.
-    echo [ERROR] No Python 3.10 or newer interpreter was found.
-    echo         Install Python for Windows ^(3.14 recommended, with the
-    echo         "tcl/tk and IDLE" option enabled^) and re-run setup.bat.
+    echo [ERROR] No working Python 3.10 or newer interpreter was found.
+    echo         Searched: C:\Program Files\Python3xx, %%LOCALAPPDATA%%\Programs\Python,
+    echo         %%LOCALAPPDATA%%\Python, the "py" launcher and PATH.
+    echo         The Microsoft Store "python" alias does not count.
+    echo.
+    echo         Fix: install Python for Windows ^(3.14 recommended^) and tick
+    echo           - "Add python.exe to PATH"
+    echo           - "tcl/tk and IDLE"
+    echo         then open a NEW terminal and re-run setup.bat.
     echo         https://www.python.org/downloads/windows/
+    echo         If Python is installed but broken, uninstall it, reinstall it,
+    echo         and re-run:  setup.bat --recreate
+    echo         Step-by-step guide: INSTALL.md, section "Python".
     goto fail
 )
 
@@ -119,7 +137,8 @@ REM tkinter ships with CPython on Windows but can be skipped at install time.
 if errorlevel 1 (
     echo.
     echo [ERROR] This Python has no tkinter module, so the RMT GUI cannot run.
-    echo         Re-run the Python installer and enable "tcl/tk and IDLE".
+    echo         Re-run the Python installer ^(Modify^) and enable "tcl/tk and IDLE".
+    echo         See INSTALL.md, section "Python".
     goto fail
 )
 
@@ -144,6 +163,9 @@ if exist "%VENV_PY%" (
     if errorlevel 1 (
         echo.
         echo [ERROR] Failed to create the virtual environment.
+        echo         The Python install at !BASE_PY! may be damaged.
+        echo         Reinstall Python, then run:  setup.bat --recreate
+        echo         See INSTALL.md, section "Python".
         goto fail
     )
 )
@@ -226,8 +248,10 @@ if defined JMP_EXE (
     echo        script for a machine that does have JMP.
     echo        JMP chart / PPT stages need JMP Pro installed locally, e.g.
     echo            C:\Program Files\SAS\JMPPRO\17\jmp.exe
-    echo        Install it from the Intel software portal, then point the
-    echo        GUI field "JMP executable" at it.
+    echo        Lab machines usually have no JMP Pro - use your laptop.
+    echo        Install it from Company Portal ^(search "JMP", pick JMP Pro^),
+    echo        start it once to activate the licence, then re-run setup.bat.
+    echo        Licence or install problems: INSTALL.md, section "JMP Pro".
 )
 
 REM ---------------------------------------------------------------
@@ -334,6 +358,8 @@ echo Remove them   : powershell -ExecutionPolicy Bypass -File scripts\create_sho
 echo.
 echo JMP Pro is never installed by this script - it must already be present
 echo as a Windows application. setup.bat only detects and reports it.
+echo.
+echo First-time install guide ^(Python, JMP Pro, licence, troubleshooting^): INSTALL.md
 echo.
 endlocal
 exit /b 0

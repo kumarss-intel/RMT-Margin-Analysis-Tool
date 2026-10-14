@@ -143,8 +143,12 @@ shortcut and never asks questions, so the agent session cannot hang on the
 taskbar / Start-menu prompts. If setup stops with a proxy marked `INVALID` (e.g. the
 placeholder `http://proxy-server:port`), ask the user for their proxy and re-run
 with `--proxy <url>` (Intel network: `http://proxy-chain.intel.com:912`).
+If setup stops on Python (`No working Python 3.10 or newer`, no `tkinter`, or a failed
+venv creation), do not try to install Python yourself. Point the user to
+`INSTALL.md` › *Python* (add Python to PATH or reinstall it), then re-run with `--recreate`.
 If `$jmp` is empty: tell the user JMP Pro was not found and run base mode (CSV +
-Excel + HTML + native PPT still work without JMP).
+Excel + HTML + native PPT still work without JMP). Mention that JMP Pro is not available
+on lab machines and comes from Company Portal; see `INSTALL.md` › *JMP Pro*.
 
 > Each `powershell` call starts a fresh process, so `$tool`/`$py`/`$jmp` do **not**
 > persist between calls. Re-derive them at the top of every command block, or keep

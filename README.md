@@ -24,7 +24,7 @@ You can drive it in three ways:
 
 1. [What's new in 2.0](#-whats-new-in-20)
 2. [Quick start](#-quick-start)
-3. [Installation & setup](#-installation--setup) — incl. [desktop / taskbar shortcuts](#desktop-taskbar-and-start-menu-shortcuts)
+3. [Installation & setup](#-installation--setup) — incl. [desktop / taskbar shortcuts](#desktop-taskbar-and-start-menu-shortcuts) and the step-by-step [INSTALL.md](INSTALL.md)
 4. [Using the GUI](#-using-the-gui)
 5. [Agentic mode (GitHub Copilot)](#-agentic-mode-github-copilot)
 6. [Command line](#-command-line)
@@ -75,9 +75,15 @@ Then do **one** of the following:
 
 ### Prerequisites
 
+> **New user?** Follow the step-by-step **[Installation Guide (INSTALL.md)](INSTALL.md)**. It covers
+> checking Python and adding it to `PATH`, repairing a broken Python install, installing JMP Pro from
+> Company Portal, and fixing the JMP Pro licence prompt.
+
 - Windows 10 or 11
-- Python 3.10+ (3.14 recommended), installed with the **tcl/tk and IDLE** option so `tkinter` is available for the GUI
-- Optional: SAS JMP Pro (licensed Windows install) for JMP charts, the JMP PPT and Graph Builder
+- Python 3.10+ (3.14 recommended), installed with the **tcl/tk and IDLE** option so `tkinter` is available for the GUI. Ticking **Add python.exe to PATH** is recommended.
+- Optional: SAS JMP Pro (licensed Windows install) for JMP charts, the JMP PPT and Graph Builder.
+  Install it from **Company Portal** (search *JMP*, pick **JMP Pro**). JMP Pro is **not available
+  on lab machines**, so install MarginIQ on your laptop for the JMP stages.
 - Optional (agentic mode): VS Code with GitHub Copilot Chat
 - Access to this private repository (ask the owner to add you as a collaborator)
 
@@ -96,7 +102,7 @@ If the clone fails with `Unsupported proxy syntax in 'proxy-server:port'`, see
 
 From this folder, double-click `setup.bat` or run `.\setup.bat`. It performs six steps:
 
-1. Locates a Python 3.10+ interpreter (prefers `C:\Program Files\Python314`, then the `py` launcher, then `PATH`).
+1. Locates a Python 3.10+ interpreter, even one that is not on `PATH`. It searches `C:\Program Files\Python3xx`, the per-user `%LOCALAPPDATA%\Programs\Python\Python3xx`, Python Install Manager runtimes, then the `py` launcher, then `PATH`.
 2. Creates the local virtual environment `.venv`.
 3. Checks the proxy settings pip will use (stopping with a clear message if one is malformed), then installs the pinned [requirements.txt](requirements.txt) (`openpyxl`, `python-pptx`, `pillow`).
 4. Verifies every package imports correctly.
@@ -178,6 +184,11 @@ JMP Pro is licensed desktop software and can never be installed by pip. Setup on
 
 Without JMP, log parsing, CSV, Excel, the HTML report and the native PPT all still work, and
 `--jmp-jsl-only` produces the JSL script to run later on a JMP-equipped machine.
+
+**Getting JMP Pro:** lab machines do not have it, so use your laptop. Install **JMP Pro** from
+**Company Portal** (search *JMP*) and start it once by hand. If JMP Pro 17 then reports a licence
+problem, get the licence from the intranet page **"JMP Statistical Software – JMP Top Level"**, or
+raise an IT ticket. See [INSTALL.md › JMP Pro](INSTALL.md#2-jmp-pro).
 
 ---
 
@@ -403,6 +414,7 @@ output_dir/
 | File | Purpose |
 |------|---------|
 | [README.md](README.md) | This user guide |
+| [INSTALL.md](INSTALL.md) | Step-by-step installation: Python / PATH, JMP Pro from Company Portal, licence, setup errors |
 | [RMT_QUICKSTART.md](RMT_QUICKSTART.md) | 5-minute beginner guide (GUI, agent, CLI) |
 | [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md) | Complete CLI reference manual |
 | [.github/skills/rmt-margin-plots/SKILL.md](.github/skills/rmt-margin-plots/SKILL.md) | Copilot agent skill (agentic mode) |
@@ -443,6 +455,15 @@ and Excel are still written.
 ---
 
 ## 🐛 Troubleshooting
+
+### Installation (Python / JMP Pro)
+
+| Symptom | Fix |
+|---------|-----|
+| `python` works in one terminal but setup or other terminals cannot find it | Python is not on `PATH`, or only the Microsoft Store alias is. See [INSTALL.md › Python](INSTALL.md#1-python). |
+| Python sits in an unexpected folder, `venv` creation fails, or `encodings` / `tkinter` errors appear | Reinstall Python, then run `setup.bat --recreate`. See [INSTALL.md › Repair](INSTALL.md#1d-repair-a-broken-python-install). |
+| `No JMP installation was detected` on a lab machine | Expected: lab machines have no JMP Pro. Run stages 1–2 there, or use your laptop. |
+| JMP Pro 17 licence error after the Company Portal install | Use the intranet page *"JMP Statistical Software – JMP Top Level"*, or raise an IT ticket. See [INSTALL.md › Licence](INSTALL.md#2b-jmp-pro-says-the-licence-is-missing-or-invalid). |
 
 ### Shortcuts / icon
 
