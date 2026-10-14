@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 TOOL_NAME = "MarginIQ"
-TOOL_SUBTITLE = "Intel CCG CVE DDR5 RMT Margin Analysis Tool"
+TOOL_SUBTITLE = "Intel CCG CVE Memory RMT Margin Analysis Tool"
 TOOL_VERSION = "2.0.0"
 
 HERE = Path(__file__).resolve().parent

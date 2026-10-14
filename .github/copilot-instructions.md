@@ -1,4 +1,4 @@
-# Copilot Instructions — MarginIQ (Intel CCG CVE DDR5 RMT Margin Analysis Tool)
+# Copilot Instructions — MarginIQ (Intel CCG CVE Memory RMT Margin Analysis Tool)
 
 This repository contains MarginIQ, a project-agnostic Windows Python tool that extracts `START_RMT`
 (Rank Margin Tool) blocks from Intel MRC debug logs and produces CSV, Excel,
@@ -20,6 +20,8 @@ When the user asks to plot, chart, analyze or report RMT margins, follow the
   the project cannot be inferred unambiguously.
 - Resolve every path from `git rev-parse --show-toplevel`; never hardcode
   user-specific paths.
+- If the pipeline prints `[MarginIQ update] …`, tell the user to `git pull`;
+  don't pull on their behalf unless asked.
 
 ## Editing the code
 

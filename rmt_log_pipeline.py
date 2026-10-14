@@ -45,6 +45,7 @@ from rmt_project import (
     project_param_aliases,
     resolve_project_key,
 )
+import rmt_update
 
 try:
     from pptx import Presentation
@@ -4861,6 +4862,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--no-update-check",
+        action="store_true",
+        help=(
+            "Skip the check for a newer MarginIQ version on the git server. "
+            f"The check is rate-limited (once per {rmt_update.DEFAULT_INTERVAL_HOURS:g} h, "
+            f"override with {rmt_update.INTERVAL_ENV}); set {rmt_update.DISABLE_ENV}=1 "
+            "to disable it permanently."
+        ),
+    )
+    parser.add_argument(
         "--jmp-exe",
         default=None,
         help=(
@@ -4951,6 +4962,14 @@ def main() -> int:
     global _ACTIVE_PROJECT_NAME
     _ACTIVE_PROJECT_NAME = project_name
     print(f"{TOOL_NAME} {TOOL_VERSION} | Project: {project_name}")
+    if not args.no_update_check:
+        try:
+            _notice = rmt_update.cli_notice(rmt_update.check_for_updates())
+        except Exception as _upd_err:  # informational only; never fail a run
+            _notice = ""
+            print(f"Note: update check skipped ({_upd_err}).")
+        if _notice:
+            print(_notice)
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)

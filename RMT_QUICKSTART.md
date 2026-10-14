@@ -1,6 +1,6 @@
 # MarginIQ - Quick Start Guide
 
-*Intel CCG CVE DDR5 RMT Margin Analysis Tool*
+*Intel CCG CVE Memory RMT Margin Analysis Tool*
 
 📖 **See Also:** [Main README](README.md) · [Installation Guide](INSTALL.md) · [Agentic mode](README.md#-agentic-mode-github-copilot) · [Full CLI reference](RMT_LOG_PIPELINE_README.md)
 
@@ -50,6 +50,11 @@ Behind the Intel network, add a proxy: `.\setup.bat --proxy http://proxy-chain.i
 If setup reports an `INVALID` proxy (e.g. `http://proxy-server:port`), see
 [Setup fails with a proxy error](README.md#setup-fails-with-a-proxy-error).
 JMP Pro is not installed by setup — it must already exist as a Windows application; setup just reports where it found it.
+
+**Staying up to date:** when a newer version is on the server, MarginIQ shows an amber banner in
+the GUI (and a `[MarginIQ update]` line in CLI output). Close MarginIQ and run `git pull` in the
+tool folder; if `requirements.txt` changed, also run `.\setup.bat --no-prompt`. The check runs at
+most once a day. See [Staying up to date](README.md#staying-up-to-date).
 
 ## Option A: GUI (recommended)
 

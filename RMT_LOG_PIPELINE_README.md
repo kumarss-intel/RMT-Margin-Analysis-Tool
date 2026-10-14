@@ -1,6 +1,6 @@
 # MarginIQ RMT Log Pipeline - Complete Reference Manual
 
-*Intel CCG CVE DDR5 RMT Margin Analysis Tool*
+*Intel CCG CVE Memory RMT Margin Analysis Tool*
 
 📖 **Quick Links:** [Main README](README.md) · [Quick Start Guide](RMT_QUICKSTART.md) · [Agentic mode](README.md#-agentic-mode-github-copilot) · [To Top](#marginiq-rmt-log-pipeline---complete-reference-manual)
 
@@ -266,6 +266,7 @@ The wrapper will guide you through:
 | `--generate-jmp-charts` | False | Enable JMP chart generation |
 | `--jmp-exe` | None | Path to jmp.exe executable |
 | `--jmp-jsl-only` | False | Generate JSL script without launching JMP |
+| `--no-update-check` | False | Skip the check for a newer MarginIQ on the git server (rate-limited to once per 24 h; see [README › Staying up to date](README.md#staying-up-to-date)) |
 
 ---
 
@@ -543,6 +544,7 @@ python "rmt_log_pipeline.py" `
 | `--generate-jmp-charts` | False | Enable JMP chart generation |
 | `--jmp-exe` | None | Path to jmp.exe executable |
 | `--jmp-jsl-only` | False | Generate JSL script without launching JMP |
+| `--no-update-check` | False | Skip the check for a newer MarginIQ on the git server (rate-limited to once per 24 h; see [README › Staying up to date](README.md#staying-up-to-date)) |
 | `--ppt-template` | None | Path to .pptx template used for the JMP-charts PPT |
 | `--jmp-axis-config` | None | Path to `jmp_axis_settings.json` for chart axis customisation. `defaults.ref_line_plus` / `ref_line_minus` (default ±10) apply to any parameter without its own `ref_line` |
 

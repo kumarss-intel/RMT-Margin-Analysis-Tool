@@ -1,6 +1,6 @@
 # MarginIQ
 
-### Intel CCG CVE DDR5 RMT Margin Analysis Tool
+### Intel CCG CVE Memory RMT Margin Analysis Tool
 
 <img src="assets/marginiq.png" alt="MarginIQ icon" width="72" align="right">
 
@@ -24,7 +24,7 @@ You can drive it in three ways:
 
 1. [What's new in 2.0](#-whats-new-in-20)
 2. [Quick start](#-quick-start)
-3. [Installation & setup](#-installation--setup) — incl. [desktop / taskbar shortcuts](#desktop-taskbar-and-start-menu-shortcuts) and the step-by-step [INSTALL.md](INSTALL.md)
+3. [Installation & setup](#-installation--setup) — incl. [desktop / taskbar shortcuts](#desktop-taskbar-and-start-menu-shortcuts), [staying up to date](#staying-up-to-date) and the step-by-step [INSTALL.md](INSTALL.md)
 4. [Using the GUI](#-using-the-gui)
 5. [Agentic mode (GitHub Copilot)](#-agentic-mode-github-copilot)
 6. [Command line](#-command-line)
@@ -41,7 +41,7 @@ You can drive it in three ways:
 
 | Area | Change |
 |------|--------|
-| Branding | Product name **MarginIQ** with the subtitle *Intel CCG CVE DDR5 RMT Margin Analysis Tool* in the GUI, HTML report and PPT. Version via `--version` or Help ▸ About. |
+| Branding | Product name **MarginIQ** with the subtitle *Intel CCG CVE Memory RMT Margin Analysis Tool* in the GUI, HTML report and PPT. Version via `--version` or Help ▸ About. |
 | Icon & shortcuts | Unique MarginIQ icon ([`assets/marginiq.ico`](assets/marginiq.ico)) on the GUI window, taskbar button and header. `setup.bat` creates a **Desktop shortcut** and asks whether to **pin to the taskbar** and add a **Start menu / Quick Launch** entry. `Launch_RMT_GUI.bat` gets an icon'd twin, `MarginIQ.lnk`. |
 | Project-agnostic | **Project** dropdown on Tab 1 and `--project NVL\|WCL` on the CLI, driven by `projects.json` (name, code, START_RMT header aliases, axis file). Add a project without code changes. WCL-style `RxVref` headers and per-byte `Mc0.C0.B0.R0` rows are parsed. |
 | Workflow | **↺ Analyze Another Log** replaces the disabled *Next* button on Tab 3 after a successful run; also *File ▸ New Analysis* (`Ctrl+N`). It resets Tab 1 to the launch state (*Boot / MRC logs* source, empty file list, default stage/profile, locked tabs, default axis values). Project, JMP path and PPT template are kept. |
@@ -49,6 +49,7 @@ You can drive it in three ways:
 | Default ±Ref | Configurable **+ Ref / − Ref** in the Tab 2 *Defaults*, saved as `defaults.ref_line_plus/minus`. Used whenever a parameter's own Ref is empty: JMP ref lines (now also on DTR charts), PASS/WARN/FAIL status and red raw-data cells. *Apply ±Ref to all* copies it to every charted parameter. |
 | HTML report | New **Mode Registers** and **ODT** tabs; the **JMP Charts** tab is now a dropdown-driven side-by-side comparison workspace; **Raw Data** is now an explorer (status, heatmap, numeric filters, views, export) with a **Δ Drift Comparison** (e.g. Boot → Run RMT). See [HTML report](#-html-report). |
 | Tab 3 | *Open HTML Report* button. |
+| Update notice | The GUI banner and CLI line say when a newer version is on the server and ask you to `git pull`. The check runs at most once a day. See [Staying up to date](#staying-up-to-date). |
 
 ---
 
@@ -175,6 +176,33 @@ design.
 | Interactive CLI menu | `.venv\Scripts\python.exe rmt_pipeline_runner.py` |
 
 Prefer an activated shell? Run `.venv\Scripts\activate.bat`; plain `python` then resolves to the virtual environment.
+
+### Staying up to date
+
+MarginIQ tells you when the repository has a newer version on the server. The check is in
+[`rmt_update.py`](rmt_update.py):
+
+| Where | What you see |
+|-------|--------------|
+| GUI | An amber banner under the header (*"A newer MarginIQ version is available on origin/main…"*) on every launch until you update, plus a one-time pop-up for each new server version. *Help ▸ Check for Updates…* checks on demand. |
+| CLI / agent | One line after the version banner: `[MarginIQ update] A newer version is available …`. The exit code is never affected. |
+
+To update, close MarginIQ and run `git pull` in the tool folder. If `requirements.txt` changed,
+then run `setup.bat --no-prompt`.
+
+**Light on the server.** The check contacts the git server **at most once every 24 hours** per
+clone; every other launch reuses the cached answer in `.git\marginiq-update-check.json`. A
+failed check (offline, proxy, no access) is cached too, so it is not retried on each launch. The
+network call is one `git ls-remote` of your upstream branch. It downloads nothing and never
+changes your files or branches. It never prompts for credentials, times out after 10 s, and runs
+in the background in the GUI, so it cannot slow the GUI or hang a run.
+
+| Setting | Effect |
+|---------|--------|
+| `MARGINIQ_UPDATE_CHECK_HOURS=<h>` | Change the interval (default `24`) |
+| `MARGINIQ_NO_UPDATE_CHECK=1` | Turn off automatic checks (*Help ▸ Check for Updates…* still works) |
+| `--no-update-check` | Skip the check for one CLI run |
+| `.venv\Scripts\python.exe rmt_update.py --force` | Check now from a terminal |
 
 ### About JMP (excluded from the virtual environment)
 
@@ -316,6 +344,7 @@ resolved from `git rev-parse --show-toplevel`, so it works from any clone locati
 | `--jmp-from-csv <csv…>` / `--jmp-from-excel <xlsx>` / `--ppt-from-charts <dir>` | Reuse existing artifacts |
 | `--jmp-jsl-only` | Write the JSL without launching JMP |
 | `--version` | Print the MarginIQ version |
+| `--no-update-check` | Skip the (once-a-day) check for a newer version on the server |
 
 Full reference: [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md). Beginner walkthrough:
 [RMT_QUICKSTART.md](RMT_QUICKSTART.md).
@@ -440,6 +469,7 @@ output_dir/
 | [scripts/create_shortcuts.ps1](scripts/create_shortcuts.ps1) | Create / remove the MarginIQ Desktop / Start / Quick Launch / taskbar shortcuts |
 | [scripts/make_icon.py](scripts/make_icon.py) | Regenerates `assets/marginiq.ico` / `.png` |
 | [scripts/check_proxy.py](scripts/check_proxy.py) | Proxy pre-flight check run by `setup.bat` |
+| [rmt_update.py](rmt_update.py) | Rate-limited "newer version on the server?" check used by the GUI and CLI |
 | [projects.json](projects.json) | Project registry |
 | [dram_nodes.json](dram_nodes.json) | DRAM part-number / die / process-node knowledge base (Platform tab + PPT) |
 | [jmp_axis_settings.json](jmp_axis_settings.json) | Axis scales and default ±Ref |

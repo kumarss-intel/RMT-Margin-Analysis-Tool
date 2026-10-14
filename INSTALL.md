@@ -1,6 +1,6 @@
 # MarginIQ — Installation Guide
 
-*Intel CCG CVE DDR5 RMT Margin Analysis Tool*
+*Intel CCG CVE Memory RMT Margin Analysis Tool*
 
 📖 **See Also:** [Main README](README.md) · [Quick Start](RMT_QUICKSTART.md) · [Full CLI reference](RMT_LOG_PIPELINE_README.md)
 

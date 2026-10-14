@@ -1,11 +1,11 @@
 ---
 name: rmt-margin-plots
-description: Run MarginIQ (Intel CCG CVE DDR5 RMT Margin Analysis Tool) to extract START_RMT blocks from MRC debug logs of any supported project (Nova Lake, Wildcat Lake, ...) and produce CSV, Excel, JMP scatter charts, an HTML report (with DDR5 Mode Register and ODT tabs), and a PowerPoint deck. Use when asked to plot/chart/analyze RMT margins, RxDqVrefByte/TxVref/RecEnDelay margins, report MR / RTT_WR / ODT values, build RMT slides, or convert lab logs into margin charts.
+description: Run MarginIQ (Intel CCG CVE Memory RMT Margin Analysis Tool) to extract START_RMT blocks from MRC debug logs of any supported project (Nova Lake, Wildcat Lake, ...) and produce CSV, Excel, JMP scatter charts, an HTML report (with DDR5 Mode Register and ODT tabs), and a PowerPoint deck. Use when asked to plot/chart/analyze RMT margins, RxDqVrefByte/TxVref/RecEnDelay margins, report MR / RTT_WR / ODT values, build RMT slides, or convert lab logs into margin charts.
 ---
 
 # RMT Margin Plotting (MarginIQ)
 
-Drives **MarginIQ** — *Intel CCG CVE DDR5 RMT Margin Analysis Tool* — the scripts at the **root of this
+Drives **MarginIQ** — *Intel CCG CVE Memory RMT Margin Analysis Tool* — the scripts at the **root of this
 repository** — non-interactively, so margin plots can be produced directly from
 a chat request. The skill is self-contained: it depends only on files inside this
 repository plus the machine's own Python / optional JMP Pro install.
@@ -23,6 +23,7 @@ section "Agentic mode (GitHub Copilot)".
 | `jmp_axis_settings.json` | Per-parameter Y-axis min/max/inc/ref-line config + default `ref_line_plus` / `ref_line_minus` |
 | `projects.json` | Project registry (NVL, WCL, ...) used by `--project` |
 | `rmt_project.py` | Branding / version / project-registry helper (imported by the CLI and GUI) |
+| `rmt_update.py` | Rate-limited "newer version on the server?" check; the CLI prints `[MarginIQ update] …` when the clone is behind |
 | `rmt_dram.py` / `dram_nodes.json` | DDR5 SPD decode + DRAM part-number / die / process-node knowledge base (Platform tab + PPT) |
 
 All paths above are relative to the repository root.
@@ -231,6 +232,13 @@ All of these still need `--outdir`, and the JMP variants still need `--jmp-exe`.
 
 List the generated artifacts with their full paths and flag anything skipped
 (e.g. "JMP not installed — Excel + HTML only"). Do not open the PPT/GUI.
+
+If the pipeline output contains a line starting with `[MarginIQ update]`, tell the
+user a newer MarginIQ version is available and that they should run `git pull` in
+the repository (then `setup.bat --no-prompt` if `requirements.txt` changed). Do
+**not** run `git pull` yourself unless the user asks: they may have local changes.
+The notice never changes the exit code. The check is rate-limited to once per 24 h,
+so don't pass `--no-update-check` routinely.
 
 ## Exit codes
 

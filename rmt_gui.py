@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MarginIQ — Intel CCG CVE DDR5 RMT Margin Analysis Tool — Graphical Front-End
+MarginIQ — Intel CCG CVE Memory RMT Margin Analysis Tool — Graphical Front-End
 =========================================================================
 
 A neat, industry-standard desktop GUI layered **on top of** the existing
@@ -55,6 +55,7 @@ from rmt_project import (
     project_label,
     project_param_aliases,
 )
+import rmt_update
 
 # ──────────────────────────────────────────────────────────────────────────
 # Configuration (kept in sync with rmt_pipeline_runner.py)
@@ -156,7 +157,7 @@ def _safe_repr(value, limit: int = 300) -> str:
 # Methods that fire on a fast repeating timer — skip per-call entry/exit
 # tracing for these so the debug log stays readable; their real activity
 # (e.g. actual subprocess output lines) is still logged explicitly inside.
-_NO_TRACE_METHODS = {"_drain_log"}
+_NO_TRACE_METHODS = {"_drain_log", "_poll_update_result"}
 
 
 def _instrument_methods(cls):
@@ -454,6 +455,14 @@ class RmtGuiApp:
         self._on_profile_change()
         self.root.after(150, self._drain_log)
 
+        self._update_q: queue.Queue[tuple[bool, rmt_update.UpdateStatus]] = queue.Queue()
+        self._update_banner: tk.Frame | None = None
+        self._update_check_running = False
+        self._update_force_pending = False
+        # Delay so the window paints first; the check itself is rate-limited
+        # (see rmt_update.py) and normally answers from its cache.
+        self.root.after(1500, lambda: self._start_update_check(force=False))
+
     # ── styling ──────────────────────────────────────────────────────────
     def _build_style(self) -> None:
         st = ttk.Style(self.root)
@@ -508,6 +517,8 @@ class RmtGuiApp:
         m_help.add_command(label="Open Debug Log Folder",
                            command=lambda: self._open_path(LOG_DIR))
         m_help.add_separator()
+        m_help.add_command(label="Check for Updates\u2026",
+                           command=lambda: self._start_update_check(force=True))
         m_help.add_command(label=f"About {TOOL_NAME}", command=self._show_about)
         mb.add_cascade(label="Help", menu=m_help)
         self.root.configure(menu=mb)
@@ -531,10 +542,86 @@ class RmtGuiApp:
             f"Pipeline: {PIPELINE_SCRIPT}\n"
             f"Debug log: {LOG_FILE}")
 
+    # ── update check ─────────────────────────────────────────────────────
+    def _start_update_check(self, force: bool) -> None:
+        """Run rmt_update.check_for_updates off the Tk thread. *force* is an
+        explicit user request: it bypasses the rate limit and always reports."""
+        if self._update_check_running:
+            # Don't drop an explicit request that arrives while the automatic
+            # check is still running; run it as soon as that one finishes.
+            if force:
+                self._update_force_pending = True
+                self.status.set("Checking for updates\u2026")
+            return
+        self._update_check_running = True
+        if force:
+            self.status.set("Checking for updates\u2026")
+
+        def _worker() -> None:
+            try:
+                result = rmt_update.check_for_updates(force=force)
+            except Exception as exc:  # never let the check break the GUI
+                LOG.exception("Update check failed")
+                result = rmt_update.UpdateStatus(rmt_update.STATE_UNKNOWN, str(exc))
+            self._update_q.put((force, result))
+
+        threading.Thread(target=_worker, name="update-check", daemon=True).start()
+        self.root.after(250, self._poll_update_result)
+
+    def _poll_update_result(self) -> None:
+        try:
+            force, status = self._update_q.get_nowait()
+        except queue.Empty:
+            self.root.after(250, self._poll_update_result)
+            return
+        self._update_check_running = False
+        if self._update_force_pending:
+            self._update_force_pending = False
+            if not force:
+                self._start_update_check(force=True)
+                return
+        LOG.info("Update check: state=%s detail=%r remote=%s local=%s remote_sha=%s cached=%s",
+                 status.state, status.detail, status.remote_ref, status.local_sha,
+                 status.remote_sha, status.from_cache)
+        if status.update_available:
+            self._show_update_banner(status)
+        elif self._update_banner is not None:
+            self._update_banner.destroy()
+            self._update_banner = None
+        if force:
+            self.status.set(status.headline())
+            if status.update_available:
+                messagebox.showinfo(f"{TOOL_NAME} \u2014 Update available", status.message())
+                rmt_update.mark_notified(status)
+            elif status.state == rmt_update.STATE_CURRENT:
+                messagebox.showinfo(f"{TOOL_NAME} \u2014 Check for Updates", status.message())
+            else:
+                messagebox.showwarning(f"{TOOL_NAME} \u2014 Check for Updates", status.message())
+        elif rmt_update.should_popup(status):
+            messagebox.showinfo(f"{TOOL_NAME} \u2014 Update available", status.message())
+            rmt_update.mark_notified(status)
+
+    def _show_update_banner(self, status: rmt_update.UpdateStatus) -> None:
+        if self._update_banner is not None:
+            self._update_banner.destroy()
+        bar = tk.Frame(self.root, bg="#fef3c7", highlightthickness=1,
+                       highlightbackground="#f59e0b")
+        bar.pack(fill="x", side="top", after=self._hdr)
+        tk.Label(bar, text=f"\u2191  {status.headline()}  Close MarginIQ and run "
+                           f"'git pull' in the tool folder to update.",
+                 bg="#fef3c7", fg="#92400e", font=("Segoe UI Semibold", 9),
+                 anchor="w").pack(side="left", padx=10, pady=4)
+        ttk.Button(bar, text="How to update",
+                   command=lambda: messagebox.showinfo(
+                       f"{TOOL_NAME} \u2014 Update available", status.message())
+                   ).pack(side="right", padx=8, pady=2)
+        self._update_banner = bar
+
     # ── header ───────────────────────────────────────────────────────────
     def _build_header(self) -> None:
         hdr = tk.Frame(self.root, bg=CLR_PRIMARY, height=76)
         hdr.pack(fill="x", side="top")
+        self._hdr = hdr
         hdr.pack_propagate(False)
         # Intel logo band (left accent)
         tk.Frame(hdr, bg="#00C7FD", width=6).pack(side="left", fill="y")
@@ -2668,6 +2755,8 @@ class RmtGuiApp:
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
+        # The GUI runs its own update check; don't repeat it in the pipeline.
+        env[rmt_update.DISABLE_ENV] = "1"
         self._stop_requested = False
         total = len(commands)
         ok = True

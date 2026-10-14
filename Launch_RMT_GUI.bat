@@ -1,6 +1,6 @@
 @echo off
 REM ===================================================================
-REM  MarginIQ - Intel CCG CVE DDR5 RMT Margin Analysis Tool - GUI Launcher
+REM  MarginIQ - Intel CCG CVE Memory RMT Margin Analysis Tool - GUI Launcher
 REM  Double-click this file to open the graphical front-end.
 REM
 REM  Windows cannot attach an icon to a .bat file itself, so the first run

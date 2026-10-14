@@ -40,7 +40,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $AppId   = 'Intel.CCG.CVE.MarginIQ'
 $Name    = 'MarginIQ'
-$Comment = 'MarginIQ - Intel CCG CVE DDR5 RMT Margin Analysis Tool'
+$Comment = 'MarginIQ - Intel CCG CVE Memory RMT Margin Analysis Tool'
 
 if (-not $ToolDir) { $ToolDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path) }
 $ToolDir  = (Resolve-Path -LiteralPath $ToolDir).Path
