@@ -7,6 +7,7 @@ both ``rmt_log_pipeline.py`` and ``rmt_gui.py`` can import it cheaply.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +29,14 @@ _FALLBACK_REGISTRY: dict[str, Any] = {
     "projects": {
         "NVL": {"name": "Nova Lake", "code": "NVL", "memory": "DDR5",
                 "param_aliases": {}, "axis_config": "jmp_axis_settings.json"},
-        "WCL": {"name": "Wildcat Lake", "code": "WCL", "memory": "DDR5",
+        "WCL": {"name": "Wildcat Lake", "code": "WCL", "memory": "DDR5 / LPDDR5",
                 "param_aliases": {"RxVref": "RxDqVrefByte"},
+                "rmt_fallback_markers": ["START_BYTE_RMT"],
+                "require_rmt_task": True,
+                "platform_variants": {"DDR5": "WCL DDR5 RVP", "LPDDR5": "WCL LPDDR5 RVP"},
+                "dtr": {"layout": "rmt_task_runs",
+                        "rmt_markers": ["START_RMT", "START_BYTE_RMT"],
+                        "temps_from_filename": True},
                 "axis_config": "jmp_axis_settings.json"},
     },
 }
@@ -99,3 +106,73 @@ def project_param_aliases(key: str | None, registry: dict[str, Any] | None = Non
     aliases = dict(BUILTIN_PARAM_ALIASES)
     aliases.update(get_project(key, registry).get("param_aliases") or {})
     return aliases
+
+
+def project_rmt_fallback_markers(key: str | None,
+                                 registry: dict[str, Any] | None = None) -> list[str]:
+    """Block start markers parsed only when a log has no ``START_RMT`` data.
+
+    E.g. WCL ``["START_BYTE_RMT"]``; only blocks inside a "Rank Margin
+    Tool" task run are used.
+    """
+    markers = get_project(key, registry).get("rmt_fallback_markers") or []
+    return [str(m).strip().upper() for m in markers if str(m).strip()]
+
+
+def project_require_rmt_task(key: str | None, registry: dict[str, Any] | None = None) -> bool:
+    """True = RMT data only from inside a "Rank Margin Tool" task (WCL)."""
+    return bool(get_project(key, registry).get("require_rmt_task", False))
+
+
+def project_rmt_limits(key: str | None, registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Spec RMT limits ``{family: {"frequencies": {freq: {"ticks": .., "physical": ..}}}}``.
+
+    ``{}`` when the project has none (e.g. NVL): the axis-config +/-Ref is used.
+    """
+    limits = get_project(key, registry).get("rmt_limits")
+    return dict(limits) if isinstance(limits, dict) else {}
+
+
+def project_dtr_rules(key: str | None, registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Project-specific DTR (thermal) parsing rules; ``{}`` = built-in NVL flow.
+
+    ``layout: "rmt_task_runs"`` - Boot RMT is the first "Rank Margin Tool"
+    run and Run RMT the last one (no "Temp Drift RMT Test" task / "Hit
+    Enter" pause). ``rmt_markers`` lists accepted block start markers and
+    ``temps_from_filename`` takes Boot/Run temps from BCRH / BHRC in the name.
+    """
+    rules = get_project(key, registry).get("dtr")
+    return dict(rules) if isinstance(rules, dict) else {}
+
+
+def project_platform_variants(key: str | None,
+                              registry: dict[str, Any] | None = None) -> dict[str, str]:
+    """Memory family -> platform variant label, e.g. ``{"LPDDR5": "WCL LPDDR5 RVP"}``."""
+    variants = get_project(key, registry).get("platform_variants")
+    return {str(k).upper(): str(v) for k, v in variants.items()} if isinstance(variants, dict) else {}
+
+
+def resolve_platform_variant(variants: dict[str, str], memory_tech: str | None,
+                             board: str | None = None) -> str | None:
+    """Pick the variant for the memory decoded from the log (e.g. "LPDDR5X").
+
+    Tries the exact technology, then its family ("LPDDR5X" -> "LPDDR5"), then
+    the board string ("WCL LP5 RVP2" -> LPDDR5). None when nothing matches.
+    """
+    if not variants:
+        return None
+    candidates: list[str] = []
+    for tech in (memory_tech or "").upper().replace("/", " ").split():
+        candidates.append(tech)
+        fam = re.match(r"(LP)?DDR\d", tech)
+        if fam:
+            candidates.append(fam.group(0))
+    board_u = (board or "").upper()
+    if re.search(r"\bLP(?:DDR)?5X?\b", board_u):
+        candidates.append("LPDDR5")
+    elif re.search(r"\bDDR5\b", board_u):
+        candidates.append("DDR5")
+    for c in candidates:
+        if c in variants:
+            return variants[c]
+    return None

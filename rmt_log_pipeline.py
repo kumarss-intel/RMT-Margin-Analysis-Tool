@@ -43,6 +43,12 @@ from rmt_project import (
     load_projects,
     project_label,
     project_param_aliases,
+    project_platform_variants,
+    project_dtr_rules,
+    project_require_rmt_task,
+    project_rmt_fallback_markers,
+    project_rmt_limits,
+    resolve_platform_variant,
     resolve_project_key,
 )
 import rmt_update
@@ -108,6 +114,45 @@ HEADER_PATTERN = re.compile(r"^Params\s*:\s*(.+)$", re.IGNORECASE)
 _ACTIVE_PARAM_ALIASES: dict[str, str] = dict(BUILTIN_PARAM_ALIASES)
 # Project label shown in the HTML / PPT reports; set by main() from --project.
 _ACTIVE_PROJECT_NAME: str | None = None
+# Extra block markers (e.g. WCL "START_BYTE_RMT") parsed only when a log has
+# no START_RMT data, and only inside "Rank Margin Tool" task runs; set by
+# main() / the GUI from projects.json.
+_ACTIVE_FALLBACK_MARKERS: list[str] = []
+# True (projects.json "require_rmt_task") = RMT data is accepted ONLY from
+# inside a "Rank Margin Tool" Started..SUCCEEDED window; per-training-step
+# Composite-UI blocks elsewhere are never plotted. False = built-in (NVL)
+# behaviour: logs without the task markers capture START_RMT anywhere.
+_ACTIVE_REQUIRE_RMT_TASK: bool = False
+# Project DTR rules from projects.json ({} = built-in NVL DTR flow).
+_ACTIVE_DTR_RULES: dict[str, Any] = {}
+# Memory family -> platform variant label (e.g. WCL DDR5 / LPDDR5 RVP).
+_ACTIVE_PLATFORM_VARIANTS: dict[str, str] = {}
+# Project spec RMT limits (projects.json "rmt_limits"; {} = none, e.g. NVL)
+# and the limits resolved for the current run (shown in HTML / PPT).
+_ACTIVE_RMT_LIMITS: dict[str, Any] = {}
+_ACTIVE_LIMITS_INFO: dict[str, Any] | None = None
+
+
+def set_rmt_fallback_markers(markers: Iterable[str] | None) -> None:
+    """Replace the fallback block-marker list (empty = START_RMT only)."""
+    _ACTIVE_FALLBACK_MARKERS.clear()
+    _ACTIVE_FALLBACK_MARKERS.extend(str(m).strip().upper() for m in (markers or [])
+                                    if str(m).strip())
+
+
+def set_project_rules(dtr_rules: dict[str, Any] | None,
+                      platform_variants: dict[str, str] | None,
+                      require_rmt_task: bool = False,
+                      rmt_limits: dict[str, Any] | None = None) -> None:
+    """Install the project's DTR rules, platform variants, RMT-task rule and limits."""
+    global _ACTIVE_REQUIRE_RMT_TASK
+    _ACTIVE_DTR_RULES.clear()
+    _ACTIVE_DTR_RULES.update(dtr_rules or {})
+    _ACTIVE_PLATFORM_VARIANTS.clear()
+    _ACTIVE_PLATFORM_VARIANTS.update(platform_variants or {})
+    _ACTIVE_REQUIRE_RMT_TASK = bool(require_rmt_task)
+    _ACTIVE_RMT_LIMITS.clear()
+    _ACTIVE_RMT_LIMITS.update(rmt_limits or {})
 
 
 def set_param_aliases(aliases: dict[str, str] | None) -> None:
@@ -237,6 +282,52 @@ def read_text_file(path: Path) -> str:
 
 
 def parse_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]:
+    """Parse ``START_RMT`` blocks; fall back to the project's extra markers.
+
+    Fallback markers (``rmt_fallback_markers`` in projects.json, e.g. WCL
+    ``START_BYTE_RMT``) are only parsed when the file yields no ``START_RMT``
+    rows, and only inside "Rank Margin Tool" task runs. With
+    ``require_rmt_task`` (WCL) a file whose Rank Margin Tool task is missing
+    or holds no RMT block is reported and skipped - the per-training-step
+    Composite-UI blocks are never plotted as RMT.
+    """
+    strict = _ACTIVE_REQUIRE_RMT_TASK
+    rows = _parse_rmt_blocks(text, source_name, stop_marker="STOP_RMT" if strict else None,
+                             require_task=strict)
+    if rows:
+        return rows
+    for marker in _ACTIVE_FALLBACK_MARKERS:
+        stop = "STOP" + marker[len("START"):] if marker.startswith("START") else None
+        rows = _parse_rmt_blocks(text, source_name, start_marker=marker,
+                                 stop_marker=stop, require_task=True)
+        if rows:
+            n_blocks = len({r["BlockIndex"] for r in rows})
+            print(f"  [info] {source_name}: using {n_blocks} {marker} block(s) "
+                  f"inside 'Rank Margin Tool' run(s).")
+            return rows
+    if _ACTIVE_REQUIRE_RMT_TASK or _ACTIVE_FALLBACK_MARKERS:
+        _warn_no_rmt_task_data(text, source_name)
+    return rows
+
+
+def _warn_no_rmt_task_data(text: str, source_name: str) -> None:
+    """Explain why a file produced no RMT rows (missing / empty RMT task)."""
+    markers = ["START_RMT"] + [m for m in _ACTIVE_FALLBACK_MARKERS if m != "START_RMT"]
+    n_blocks = sum(1 for line in text.splitlines()
+                   if line.strip().upper().startswith(tuple(markers)))
+    if not RMT_TASK_START_PATTERN.search(text):
+        reason = "the 'Rank Margin Tool' MRC task never ran in this log"
+    else:
+        reason = ("the 'Rank Margin Tool' task ran but no "
+                  f"{' / '.join(markers)} block was printed between its Started and SUCCEEDED")
+    ignored = (f" {n_blocks} per-training-step Composite-UI block(s) elsewhere were ignored."
+               if n_blocks else "")
+    print(f"  [warn] {source_name}: NO RMT DATA - {reason}; file skipped.{ignored}")
+
+
+def _parse_rmt_blocks(text: str, source_name: str, start_marker: str = "START_RMT",
+                      stop_marker: str | None = None,
+                      require_task: bool = False) -> list[dict[str, Any]]:
     # ── Bound RMT block capture to the "Rank Margin Tool" GREEN MRC task ──
     # Real logs typically contain the Started/SUCCEEDED marker pair once per
     # frequency/gear/temperature iteration (i.e. multiple times per file), and
@@ -301,8 +392,11 @@ def parse_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]:
         if run_match:
             ctx.run_temp = float(run_match.group(1))
 
-        if line.upper().startswith("START_RMT"):
-            capture_block = (not _has_task_markers) or in_task_window[i]
+        if line.upper().startswith(start_marker):
+            # require_task: only blocks inside a Rank Margin Tool window count,
+            # even when the log has no task markers at all.
+            capture_block = (in_task_window[i] if require_task
+                             else (not _has_task_markers or in_task_window[i]))
             block_index += 1
             header_line: str | None = None
             i += 1
@@ -317,8 +411,10 @@ def parse_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]:
                 if not current:
                     i += 1
                     continue
-                if current.upper().startswith("START_RMT"):
+                if current.upper().startswith(start_marker):
                     i -= 1
+                    break
+                if stop_marker and current.upper().startswith(stop_marker):
                     break
                 if current.startswith("Setting ") or current.startswith("$"):
                     break
@@ -415,7 +511,8 @@ def _normalize_dtr_temp(raw: float | None) -> float | None:
 
 
 def _parse_one_rmt_block(
-    lines: list[str], start_idx: int
+    lines: list[str], start_idx: int, start_marker: str = "START_RMT",
+    stop_marker: str = "STOP_RMT",
 ) -> tuple[list[tuple[str, list[float]]], int, list[str | None]]:
     """Parse a single ``START_RMT`` .. ``STOP_RMT`` block.
 
@@ -424,16 +521,17 @@ def _parse_one_rmt_block(
     ``(rank_label, values)`` tuples, ``next_idx`` is the index just past the
     terminating ``STOP_RMT`` (or where scanning stopped) and ``param_order``
     maps each value pair to its canonical parameter (from the header).
+    Other marker pairs (e.g. ``START_BYTE_RMT``) are passed explicitly.
     """
     ranks: list[tuple[str, list[float]]] = []
     header_line: str | None = None
     i = start_idx + 1
     while i < len(lines):
         cur = lines[i].strip()
-        if cur.upper().startswith("STOP_RMT"):
+        if cur.upper().startswith(stop_marker):
             i += 1
             break
-        if cur.upper().startswith("START_RMT"):
+        if cur.upper().startswith(start_marker):
             break
         if header_line is None and HEADER_PATTERN.match(cur):
             header_line = cur
@@ -475,6 +573,120 @@ def _dtr_freq_gear_from_name(source_name: str) -> tuple[int | None, int | None]:
     return freq, gear
 
 
+def _dtr_freq_gear(lines: list[str], source_name: str) -> tuple[int | None, int | None]:
+    """DTR (frequency, gear): filename first, then the first
+    "Requested/actual ratio .., Frequency=X, GearMode=Y" line of the log."""
+    freq, gear = _dtr_freq_gear_from_name(source_name)
+    if freq is None or gear is None:
+        for line in lines:
+            fg = FREQ_GEAR_PATTERN.search(line)
+            if fg:
+                if freq is None:
+                    freq = int(fg.group(1))
+                if gear is None:
+                    gear = (int(fg.group(2)) + 1) * 2
+                break
+    return freq, gear
+
+
+# DTR file-name tag -> nominal (boot, run) chamber temperature.
+DTR_FILE_TEMPS: dict[str, tuple[float, float]] = {"BCRH": (0.0, 90.0), "BHRC": (90.0, 0.0)}
+_DTR_TAG_PATTERN = re.compile(r"(?:^|[_\-\s.])(BCRH|BHRC)(?=[_\-\s.]|$)", re.IGNORECASE)
+
+
+def _dtr_temps_from_name(source_name: str) -> tuple[float | None, float | None]:
+    """(boot, run) temperature from a BCRH / BHRC tag anywhere in the name."""
+    m = _DTR_TAG_PATTERN.search(re.sub(r"\.[^.]+$", "", source_name))
+    return DTR_FILE_TEMPS[m.group(1).upper()] if m else (None, None)
+
+
+def _parse_dtr_rmt_task_runs(text: str, source_name: str,
+                             rules: dict[str, Any]) -> list[dict[str, Any]]:
+    """DTR flow where both data sets come from "Rank Margin Tool" runs.
+
+    Used by projects whose DTR logs re-run the RMT task from the MRC
+    interpreter (e.g. WCL ``x 0xdd44``) instead of the NVL "Temp Drift RMT
+    Test" + "Hit Enter" flow: Boot RMT = block of the first run, Run RMT =
+    block of the last run. Temperatures come from the BCRH / BHRC file-name
+    tag when ``temps_from_filename`` is set (these logs print no usable PHY
+    temperature), else from ``PHY Temperature1`` after each block.
+    """
+    lines = text.splitlines()
+    markers = [str(m).strip().upper() for m in (rules.get("rmt_markers") or ["START_RMT"])]
+    task_idxs = [i for i, raw in enumerate(lines) if RMT_TASK_START_PATTERN.search(raw)]
+    if not task_idxs:
+        print(f"  [info] No 'Rank Margin Tool' runs in {source_name}; using standard RMT parser.")
+        return parse_rmt_from_text(text, source_name)
+
+    def _first_block(begin: int, end: int) -> tuple[int, str] | None:
+        for i in range(begin, end):
+            s = lines[i].strip().upper()
+            for mk in markers:
+                if s.startswith(mk):
+                    return i, mk
+        return None
+
+    runs = []
+    for k, s in enumerate(task_idxs):
+        limit = task_idxs[k + 1] if k + 1 < len(task_idxs) else len(lines)
+        end = next((j for j in range(s, limit) if RMT_TASK_END_PATTERN.search(lines[j])), limit)
+        blk = _first_block(s, end)
+        if blk:
+            runs.append(blk)
+        else:
+            print(f"  [warn] {source_name}: 'Rank Margin Tool' run at line {s + 1} has no "
+                  f"{' / '.join(markers)} block between Started and SUCCEEDED.")
+    if not runs:
+        print(f"  [warn] {source_name}: NO RMT DATA - 'Rank Margin Tool' ran but printed no "
+              f"{' / '.join(markers)} block; file skipped.")
+        return []
+    if len(runs) == 1:
+        print(f"  [warn] Only one RMT run in {source_name}; Run-temperature RMT is missing.")
+    elif len(runs) > 2:
+        print(f"  [info] {len(runs)} RMT runs in {source_name}; using the first (Boot) "
+              f"and the last (Run).")
+    selected = [(runs[0], True)] + ([(runs[-1], False)] if len(runs) > 1 else [])
+
+    freq, gear = _dtr_freq_gear(lines, source_name)
+    name_boot, name_run = ((_dtr_temps_from_name(source_name))
+                           if rules.get("temps_from_filename") else (None, None))
+    if rules.get("temps_from_filename") and name_boot is None:
+        print(f"  [warn] No BCRH/BHRC tag in {source_name}; using PHY Temperature1.")
+
+    rows: list[dict[str, Any]] = []
+    phy_boot: float | None = None
+    for block_index, ((start, mk), is_boot) in enumerate(selected, start=1):
+        stop = "STOP" + mk[len("START"):] if mk.startswith("START") else "STOP_RMT"
+        ranks, after, param_order = _parse_one_rmt_block(lines, start, mk, stop)
+        phy = _phy_temp_after(lines, after)
+        if is_boot:
+            phy_boot = phy
+        if name_boot is not None:
+            run_temp = name_boot if is_boot else name_run
+        else:
+            run_temp = _normalize_dtr_temp(phy)
+        for rank, values in ranks:
+            record: dict[str, Any] = {
+                "SourceFile": source_name,
+                "Frequency": freq,
+                "Gear": gear,
+                "BlockIndex": block_index,
+                "Params": rank,
+                "BootTemp": None,
+                "RunTemp": run_temp,
+            }
+            if _assign_param_values(record, values, param_order):
+                rows.append(record)
+
+    boot_temp = name_boot if name_boot is not None else _normalize_dtr_temp(phy_boot)
+    for r in rows:
+        r["BootTemp"] = boot_temp
+    src = "file name" if name_boot is not None else "PHY Temperature1"
+    print(f"  [info] DTR: parsed {len(rows)} rows from {source_name} "
+          f"(Freq={freq}, Gear={gear}, BootTemp={boot_temp}, temps from {src})")
+    return rows
+
+
 def parse_dtr_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]:
     """Parse a DTR (Dynamic Thermal Range) log into exactly two RMT data sets.
 
@@ -489,7 +701,12 @@ def parse_dtr_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]
 
     Falls back to :func:`parse_rmt_from_text` when the DTR task markers are
     absent (so a mislabelled / non-DTR file still yields something sensible).
+    Projects with ``dtr`` rules in projects.json (e.g. WCL) use
+    :func:`_parse_dtr_rmt_task_runs` instead.
     """
+    if _ACTIVE_DTR_RULES.get("layout") == "rmt_task_runs":
+        return _parse_dtr_rmt_task_runs(text, source_name, _ACTIVE_DTR_RULES)
+
     lines = text.splitlines()
 
     # Locate the boot task, the Hit-Enter pause, and the run task in order.
@@ -530,16 +747,7 @@ def parse_dtr_rmt_from_text(text: str, source_name: str) -> list[dict[str, Any]]
     # the log body's "Requested/actual ratio" often reports an early boot
     # frequency that differs from the DTR test setpoint), then fall back to
     # the body context.
-    freq, gear = _dtr_freq_gear_from_name(source_name)
-    if freq is None or gear is None:
-        for line in lines:
-            fg = FREQ_GEAR_PATTERN.search(line)
-            if fg:
-                if freq is None:
-                    freq = int(fg.group(1))
-                if gear is None:
-                    gear = (int(fg.group(2)) + 1) * 2
-                break
+    freq, gear = _dtr_freq_gear(lines, source_name)
 
     rows: list[dict[str, Any]] = []
     global_boot_temp: float | None = None
@@ -747,6 +955,31 @@ def _scale_box_dispatch(col_name: str, cfg: dict, defs: dict, is_plus: bool) -> 
         f"                    {{{body}}}",
         "                )",
     ]
+
+
+def _axis_clip_report(rows: list[dict[str, Any]] | None, param: str,
+                      plus_cfg: dict, minus_cfg: dict) -> str | None:
+    """Describe data points that fall outside a configured axis Min/Max."""
+    parts: list[str] = []
+    for col, cfg in ((f"{param}+", plus_cfg), (f"{param}-", minus_cfg)):
+        lo, hi = cfg.get("min"), cfg.get("max")
+        if lo is None and hi is None:
+            continue
+        vals: list[float] = []
+        for r in rows or []:
+            try:
+                vals.append(float(r.get(col)))
+            except (TypeError, ValueError):
+                continue
+        try:
+            out = [v for v in vals if (lo is not None and v < float(lo))
+                   or (hi is not None and v > float(hi))]
+        except (TypeError, ValueError):
+            continue
+        if out:
+            parts.append(f"{col} ({len(out)}/{len(vals)} pts outside [{lo}, {hi}], "
+                         f"data {min(vals):g}..{max(vals):g})")
+    return "; ".join(parts) or None
 
 
 def _has_temp_data(rows: list[dict[str, Any]]) -> bool:
@@ -1002,6 +1235,10 @@ def generate_jmp_jsl(
             pcfg      = cfg_params.get(param, {})
             plus_cfg  = pcfg.get("plus",  {})
             minus_cfg = pcfg.get("minus", {})
+            _clip = _axis_clip_report(rows, param, plus_cfg, minus_cfg)
+            if _clip:
+                print(f"  [warn] JMP axis hides data for {_clip} - recalculate the axis "
+                      f"(GUI 'Recalculate from data') or widen it in the axis JSON.")
             disp_p    = _scale_box_dispatch(param_plus,  plus_cfg,  cfg_defs, is_plus=True)
             disp_m    = _scale_box_dispatch(param_minus, minus_cfg, cfg_defs, is_plus=False)
             disp_p_c  = disp_p[:-1] + [disp_p[-1] + ","]
@@ -1544,7 +1781,10 @@ def parse_platform_info(text: str, source_name: str) -> dict[str, Any]:
     P_SPDREC = re.compile(r"SPD\s+Dimm\s+recognition.*?Dimm\s+(\d+/\d+/\d+)", re.I)
     # No re.I flag intentionally: DIMM type keywords (CSODIMM, SODIMM, RDIMM…)
     # are ALL-CAPS while "detected" is lowercase — this separates them cleanly.
-    P_DDRTY  = re.compile(r"(DDR\d(?:\s+[A-Z][A-Z0-9]+)?)\s+detected.*?Rev:\s*([\d.]+)")
+    # Also matches LPDDR memory-down parts ("LPDDR5X Memory Down detected").
+    P_DDRTY  = re.compile(
+        r"((?:LP)?DDR\d[A-Z]?(?:\s+[A-Z][A-Za-z0-9]+)*)\s+detected.*?Rev:\s*([\d.]+)"
+    )
     P_NODIM  = re.compile(r"No\s+DIMM\s+detected", re.I)
     # Per-DIMM field patterns are anchored to the start of the line: the SPD
     # block has no end marker, so unanchored patterns would also match later
@@ -1745,6 +1985,247 @@ def parse_platform_info(text: str, source_name: str) -> dict[str, Any]:
     return info
 
 
+def _memory_technology(dimms: Iterable[dict[str, Any]]) -> str | None:
+    """Memory technology decoded from the log, e.g. "DDR5" or "LPDDR5X".
+
+    Uses the first word of each populated module type ("DDR5 CSODIMM",
+    "LPDDR5X Memory Down"); None when nothing was detected.
+    """
+    types = sorted({str(d["module_type"]).split()[0] for d in dimms
+                    if d.get("populated") and d.get("module_type")})
+    return " / ".join(types) or None
+
+
+def _platform_variants_of(platform_infos: list[dict] | None) -> str | None:
+    """Distinct ``platform_variant`` labels (e.g. "WCL LPDDR5 RVP"), or None."""
+    found = sorted({pi["platform_variant"] for pi in platform_infos or []
+                    if pi.get("platform_variant")})
+    return " / ".join(found) or None
+
+
+# ---------------------------------------------------------------------------
+# Spec RMT limits (projects.json "rmt_limits", e.g. WCL)
+# ---------------------------------------------------------------------------
+
+def _memory_family(text: str | None) -> str | None:
+    """"LPDDR5X Memory Down" / "WCL LP5 RVP2" -> "LPDDR5"; "DDR5 CSODIMM" -> "DDR5"."""
+    t = (text or "").upper()
+    m = re.search(r"\b(LP)?DDR(\d)", t)
+    if m:
+        return f"{m.group(1) or ''}DDR{m.group(2)}"
+    m = re.search(r"\bLP(\d)X?\b", t)
+    return f"LPDDR{m.group(1)}" if m else None
+
+
+def _file_memory_families(platform_infos: list[dict] | None) -> dict[str, str]:
+    """source file name -> memory family decoded from its log."""
+    out: dict[str, str] = {}
+    for pi in platform_infos or []:
+        fam = (_memory_family(_memory_technology(pi.get("dimms", [])))
+               or _memory_family(pi.get("board")))
+        if fam and pi.get("source_file"):
+            out[str(pi["source_file"])] = fam
+    return out
+
+
+def _limit_entry(family: str, freq: Any) -> tuple[dict[str, Any] | None, int | None]:
+    """(table entry, table frequency) for *family* at *freq*; nearest freq if not listed."""
+    table = (_ACTIVE_RMT_LIMITS.get(family) or {}).get("frequencies") or {}
+    try:
+        f = int(float(freq))
+    except (TypeError, ValueError):
+        return None, None
+    if not table:
+        return None, None
+    if str(f) in table:
+        return table[str(f)], f
+    nearest = min((int(k) for k in table), key=lambda k: (abs(k - f), -k))
+    return table[str(nearest)], nearest
+
+
+def resolve_rmt_limits(rows: list[dict[str, Any]] | None,
+                       platform_infos: list[dict] | None) -> dict[str, Any] | None:
+    """Resolve the spec limits that apply to *rows* (per file family + frequency).
+
+    Returns None when the project has no limits or nothing matches. The
+    result holds every (family, frequency) combination found, the per-row
+    lookup key, and the chart limit per parameter: the exact limit for a
+    single combination, otherwise the strictest (largest) one with a warning.
+    """
+    if not _ACTIVE_RMT_LIMITS or not rows:
+        return None
+    fams = _file_memory_families(platform_infos)
+    only = sorted(set(fams.values()))
+    default_fam = only[0] if len(only) == 1 else None
+    combos: dict[tuple[str, int], dict[str, Any]] = {}
+    unresolved: set[str] = set()
+    for r in rows:
+        src = str(r.get("SourceFile") or "")
+        fam = fams.get(src) or default_fam
+        entry, tfreq = _limit_entry(fam, r.get("Frequency")) if fam else (None, None)
+        if entry is None:
+            unresolved.add(f"{src or '?'} ({fam or 'memory type unknown'}, "
+                           f"{r.get('Frequency') or 'frequency unknown'})")
+            continue
+        key = (fam, tfreq)
+        c = combos.setdefault(key, {"family": fam, "table_freq": tfreq, "log_freqs": set(),
+                                    "files": set(), "entry": entry})
+        try:
+            c["log_freqs"].add(int(float(r.get("Frequency"))))
+        except (TypeError, ValueError):
+            pass
+        c["files"].add(src)
+    for u in sorted(unresolved):
+        print(f"  [warn] RMT limits: no limit for {u}; +/-Ref from the axis settings is used.")
+    if not combos:
+        return None
+    params = sorted({p for c in combos.values() for p in c["entry"].get("ticks", {})},
+                    key=lambda p: PARAMS.index(p) if p in PARAMS else 99)
+    chart: dict[str, list[float]] = {}
+    for p in params:
+        vals = [c["entry"]["ticks"][p] for c in combos.values() if p in c["entry"].get("ticks", {})]
+        chart[p] = [max(abs(float(v[0])) for v in vals), max(abs(float(v[1])) for v in vals)]
+    combo_list = []
+    for (fam, tfreq), c in sorted(combos.items()):
+        exact = c["log_freqs"] == {tfreq}
+        if not exact:
+            print(f"  [warn] RMT limits: {fam} {sorted(c['log_freqs'])} MT/s not in the limit "
+                  f"table; using the nearest listed frequency {tfreq} MT/s.")
+        combo_list.append({"family": fam, "table_freq": tfreq, "log_freqs": sorted(c["log_freqs"]),
+                           "exact": exact, "files": sorted(c["files"]),
+                           "ticks": c["entry"].get("ticks", {}),
+                           "physical": c["entry"].get("physical", {})})
+    if len(combo_list) > 1:
+        print("  [warn] RMT limits: several memory/frequency combinations in one run - the JMP "
+              "+/-Ref lines use the strictest limit; the spec PASS/FAIL table uses each row's own limit.")
+    for c in combo_list:
+        txt = ", ".join(f"{p} +/-{c['ticks'][p][1]:g}" for p in params if p in c["ticks"])
+        print(f"  [info] RMT limits ({c['family']} {c['table_freq']} MT/s, ticks): {txt}")
+    return {"source": _ACTIVE_RMT_LIMITS.get("_source", ""),
+            "units": _ACTIVE_RMT_LIMITS.get("_units", ""),
+            "physical_units": _ACTIVE_RMT_LIMITS.get("physical_units", {}),
+            "file_families": fams, "default_family": default_fam,
+            "combos": combo_list, "chart": chart, "params": params}
+
+
+def _row_limit(info: dict[str, Any], row: dict[str, Any], param: str) -> list[float] | None:
+    """Spec [L, H] for one row (its own file family and frequency)."""
+    fam = info["file_families"].get(str(row.get("SourceFile") or "")) or info["default_family"]
+    if not fam:
+        return None
+    entry, _ = _limit_entry(fam, row.get("Frequency"))
+    lim = (entry or {}).get("ticks", {}).get(param)
+    return [abs(float(lim[0])), abs(float(lim[1]))] if lim else None
+
+
+def rmt_spec_check(rows: list[dict[str, Any]], info: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Worst-case spec check per parameter: every rank must meet its own limit on both sides."""
+    out: list[dict[str, Any]] = []
+    if not info:
+        return out
+    for p in info["params"]:
+        worst_m = worst_p = None
+        fails: list[str] = []
+        n = 0
+        for r in rows:
+            lim = _row_limit(info, r, p)
+            try:
+                vm, vp = float(r.get(f"{p}-")), float(r.get(f"{p}+"))
+            except (TypeError, ValueError):
+                continue
+            if lim is None:
+                continue
+            n += 1
+            worst_m = vm if worst_m is None else max(worst_m, vm)
+            worst_p = vp if worst_p is None else min(worst_p, vp)
+            if abs(vm) < lim[0] or vp < lim[1]:
+                fails.append(f"{r.get('Params')} ({vm:g}/{vp:g})")
+        if n:
+            out.append({"param": p, "limit": info["chart"][p], "worst_minus": worst_m,
+                        "worst_plus": worst_p, "n": n, "fails": fails,
+                        "result": "FAIL" if fails else "PASS"})
+    return out
+
+
+def apply_rmt_limits(axis_cfg: dict | None, info: dict[str, Any] | None) -> dict:
+    """Copy of *axis_cfg* with the spec limits as per-parameter +/-Ref.
+
+    Axis Min/Max (when set) are widened so the limit line stays visible.
+    Returns *axis_cfg* unchanged when *info* is None (e.g. NVL).
+    """
+    import copy as _copy
+    if not info:
+        return axis_cfg or {}
+    cfg = _copy.deepcopy(axis_cfg or {})
+    params = cfg.setdefault("parameters", {})
+    for p, (lim_l, lim_h) in info["chart"].items():
+        pc = params.setdefault(p, {})
+        for side, ref in (("plus", lim_h), ("minus", -lim_l)):
+            ref = int(ref) if float(ref).is_integer() else ref
+            sc = pc.setdefault(side, {})
+            sc["ref_line"] = ref
+            inc = float(sc.get("inc") or (cfg.get("defaults") or {}).get("inc") or 5)
+            if "min" in sc and float(sc["min"]) > ref:
+                sc["min"] = _m_floor(ref - inc * 0.5, inc)
+            if "max" in sc and float(sc["max"]) < ref:
+                sc["max"] = _m_ceil(ref + inc * 0.5, inc)
+    return cfg
+
+
+def _m_floor(v: float, inc: float) -> float:
+    import math as _m
+    return float(_m.floor(v / inc) * inc)
+
+
+def _m_ceil(v: float, inc: float) -> float:
+    import math as _m
+    return float(_m.ceil(v / inc) * inc)
+
+
+def _setup_rmt_limits(axis_cfg: dict | None, rows: list[dict[str, Any]] | None,
+                      platform_infos: list[dict] | None, enabled: bool) -> dict:
+    """Resolve + apply the project limits for a run; sets ``_ACTIVE_LIMITS_INFO``."""
+    global _ACTIVE_LIMITS_INFO
+    _ACTIVE_LIMITS_INFO = None
+    if not enabled or not _ACTIVE_RMT_LIMITS:
+        if _ACTIVE_RMT_LIMITS and not enabled:
+            print("  [info] RMT spec limits disabled (--no-rmt-limits); using axis-config +/-Ref.")
+        return axis_cfg or {}
+    info = resolve_rmt_limits(rows, platform_infos)
+    if info:
+        info["check"] = rmt_spec_check(rows or [], info)
+        for c in info["check"]:
+            if c["fails"]:
+                print(f"  [warn] RMT spec FAIL {c['param']} (limit +/-{c['limit'][1]:g}): "
+                      f"{len(c['fails'])}/{c['n']} rank(s) - {', '.join(c['fails'][:4])}")
+        _ACTIVE_LIMITS_INFO = info
+    return apply_rmt_limits(axis_cfg, info)
+
+
+def _save_limits_metadata(outdir: Path) -> None:
+    """Add the applied spec limits + PASS/FAIL to ``rmt_metadata.json`` (automation).
+
+    Only written when limits applied (e.g. WCL); key ``rmt_limits`` with
+    ``overall`` = "PASS" / "FAIL", ``combos``, ``chart`` and per-parameter ``check``.
+    """
+    import json as _json
+    info = _ACTIVE_LIMITS_INFO
+    if not info:
+        return
+    meta_path = outdir / "rmt_metadata.json"
+    try:
+        data = (_json.loads(meta_path.read_text(encoding="utf-8"))
+                if meta_path.is_file() else {})
+        data["rmt_limits"] = {
+            "overall": "FAIL" if any(c["fails"] for c in info.get("check", [])) else "PASS",
+            **{k: info.get(k) for k in ("source", "units", "physical_units",
+                                         "combos", "chart", "check")},
+        }
+        meta_path.write_text(_json.dumps(data, separators=(",", ":")), encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        print(f"  [warn] could not store RMT limits in {meta_path.name}: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Training step extraction
 # ---------------------------------------------------------------------------
@@ -1755,12 +2236,18 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
     Returns a list of dicts:
         task_type   : "MRC" or "GREEN MRC"
         name        : task name string
-        status      : "SUCCEEDED" | "FAILED" | "RUNNING"
+        status      : "SUCCEEDED" | "FAILED" | "RUNNING" | "INCOMPLETE"
         status_code : e.g. "0h", "23h" (None if still running)
-        start_line  : 1-based line number of the Start event
+        start_line  : 1-based line number of the Start event (None if missing)
         end_line    : 1-based line number of the end event (None if open)
         iteration   : 0-based iteration counter (increments at Pre-Training)
         source      : source_name
+        note        : only on log-gap entries (see below)
+
+    GREEN MRC tasks never overlap in a complete log, so a GREEN task still
+    open when the next one starts lost its end line (serial-capture gap): it
+    is marked INCOMPLETE. An end line with no Started line (the other side of
+    the gap) is kept with ``start_line`` None. Both print a [warn].
     """
     import re as _re
 
@@ -1778,6 +2265,17 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
     iteration = 0
     seen_pre_training = False
 
+    def _close_open_green(lineno: int) -> None:
+        for prev_name, prev in list(open_tasks.items()):
+            if prev["task_type"] == "GREEN MRC":
+                open_tasks.pop(prev_name)
+                prev["status"] = "INCOMPLETE"
+                prev["note"] = (f"end line missing - log gap between lines "
+                                f"{prev['start_line']} and {lineno}")
+                print(f"  [warn] {source_name}: GREEN MRC task '{prev_name}' "
+                      f"(line {prev['start_line']}) has no SUCCEEDED/FAILED line before "
+                      f"line {lineno} - log capture gap; marked INCOMPLETE.")
+
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
 
@@ -1785,6 +2283,8 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
         if m:
             is_green = bool(m.group(1))
             name = m.group(2).strip()
+            if is_green:
+                _close_open_green(lineno)
             # Each "Pre-Training" starts a new sweep/iteration (skip the very first)
             if name == "Pre-Training":
                 if seen_pre_training:
@@ -1814,6 +2314,21 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
                 t["status"] = status
                 t["status_code"] = code
                 t["end_line"] = lineno
+            elif m.group(1):
+                _close_open_green(lineno)
+                tasks.append({
+                    "task_type":   "GREEN MRC",
+                    "name":        name,
+                    "status":      status,
+                    "status_code": code,
+                    "start_line":  None,
+                    "end_line":    lineno,
+                    "iteration":   iteration,
+                    "source":      source_name,
+                    "note":        "Started line missing - log gap",
+                })
+                print(f"  [warn] {source_name}: GREEN MRC task '{name}' ends at line {lineno} "
+                      f"without a Started line - log capture gap.")
 
     return tasks
 
@@ -2297,6 +2812,11 @@ def build_ppt_professional(
     meta_tb = s1.shapes.add_textbox(Inches(0.9), Inches(3.75), Inches(11.5), Inches(2.5))
     mlines = [
         f"Project     : {_ACTIVE_PROJECT_NAME or 'N/A'}",
+    ]
+    _variant = _platform_variants_of(platform_infos)
+    if _variant:
+        mlines.append(f"Platform    : {_variant}")
+    mlines += [
         f"Generated   : {generated}",
         f"Source files: {len(files)}",
         f"Frequencies : {freq_disp}",
@@ -2326,9 +2846,13 @@ def build_ppt_professional(
             ("Board / RVP",      ", ".join(boards) if boards else "N/A"),
             ("CPU",              ", ".join(cpus)   if cpus   else "N/A"),
             ("PHY IP Version",   ", ".join(phys)   if phys   else "N/A"),
-            ("Memory Technology", "DDR5"),
+            ("Memory Technology", _memory_technology(
+                [d for pi in platform_infos for d in pi.get("dimms", [])]) or "DDR5"),
             ("Source Files",     str(len(platform_infos))),
         ]
+        _variant = _platform_variants_of(platform_infos)
+        if _variant:
+            sys_items.insert(0, ("Platform Variant", _variant))
         n_sys = len(sys_items) + 1
         st = sp.shapes.add_table(
             n_sys, 2, Inches(0.25), Inches(1.25),
@@ -2507,6 +3031,46 @@ def build_ppt_professional(
             _sources_notes(s_b, [(s["title"], s["rows"]) for s in secs])
 
     # ==============================================================
+    # Spec RMT limits (projects with "rmt_limits", e.g. WCL)
+    # ==============================================================
+    _lim = _ACTIVE_LIMITS_INFO
+    if _lim and _lim.get("check"):
+        sl = prs.slides.add_slide(blank)
+        _combo_txt = "; ".join(
+            f"{c['family']} {c['table_freq']} MT/s" + ("" if c["exact"] else " (nearest)")
+            for c in _lim["combos"])
+        _n_fail = sum(1 for c in _lim["check"] if c["fails"])
+        add_banner(sl, f"Spec RMT Limits \u2014 {_combo_txt}",
+                   f"{len(_lim['check']) - _n_fail} PASS / {_n_fail} FAIL  |  limits used as "
+                   f"\u00b1Ref in all charts  |  source: {_lim.get('source') or 'projects.json'}"[:150])
+        hdrs = ["Parameter", "Limit (ticks)", "Limit (physical)", "Worst \u2212",
+                "Worst +", "Failing", "Failing rows (\u2212/+)", "Result"]
+        n_r = len(_lim["check"]) + 1
+        lt = sl.shapes.add_table(n_r, len(hdrs), Inches(0.25), Inches(1.3),
+                                 Inches(12.8), Inches(min(5.6, 0.45 * n_r))).table
+        for ci, cw in enumerate([1.6, 1.2, 1.4, 1.0, 1.0, 0.9, 4.9, 0.8]):
+            for ri in range(n_r):
+                lt.cell(ri, ci).width = Inches(cw)
+        set_hdr_row(lt, hdrs)
+        for ri, c in enumerate(_lim["check"], 1):
+            lim_l, lim_h = c["limit"]
+            failed = bool(c["fails"])
+            bg = FAIL_BG if failed else (ALT if ri % 2 == 0 else None)
+            phys = _limit_phys_text(_lim, c["param"]).replace("&plusmn;", "\u00b1") \
+                .replace("&minus;", "\u2212").replace("&#8212;", "\u2014")
+            vals = [c["param"],
+                    f"\u00b1{lim_h:g}" if lim_l == lim_h else f"\u2212{lim_l:g} / +{lim_h:g}",
+                    phys, f"{c['worst_minus']:g}", f"{c['worst_plus']:g}",
+                    f"{len(c['fails'])}/{c['n']}",
+                    (", ".join(c["fails"][:4]) + (" \u2026" if len(c["fails"]) > 4 else ""))
+                    if failed else "\u2014",
+                    c["result"]]
+            for ci, v in enumerate(vals):
+                fg = (FAIL_FG if failed else PASS_FG) if ci == 7 else NAVY
+                set_cell(lt.cell(ri, ci), v, bg=bg, fg=fg, bold=(ci in (0, 7)), sz=8,
+                         align=PP_ALIGN.LEFT if ci == 6 else PP_ALIGN.CENTER)
+
+    # ==============================================================
     # Slide 3: Training Steps Summary (if available)
     # ==============================================================
     if training_steps:
@@ -2543,6 +3107,10 @@ def build_ppt_professional(
             ("Iterations",    str(n_iters)),
             ("Task Types",    f"{sum(1 for t in training_steps if 'GREEN' in t['task_type'])} GREEN  /  {sum(1 for t in training_steps if 'GREEN' not in t['task_type'])} BLUE"),
         ]
+        _gap_names = sorted({t["name"] for t in training_steps if t.get("note")})
+        if _gap_names:
+            sum_rows.append(("⚠ Log capture gaps",
+                             f"{len(_gap_names)}: {', '.join(_gap_names)[:60]}"))
         failed_tasks = [(t["name"], t["iteration"], t.get("status_code") or "?")
                         for t in training_steps if t["status"] == "FAILED"]
         if failed_tasks:
@@ -2791,6 +3359,9 @@ def _build_training_steps_html(training_steps: list[dict] | None) -> list[str]:
             return '<span class="badge bg-success">&#10003; SUCCEEDED</span>'
         if s == "FAILED":
             return '<span class="badge bg-danger">&#10007; FAILED</span>'
+        if s == "INCOMPLETE":
+            return ('<span class="badge bg-secondary" title="End line missing from the log '
+                    '(capture gap)">&#9888; INCOMPLETE</span>')
         return '<span class="badge bg-warning text-dark">RUNNING</span>'
 
     def _render_source(steps: list[dict], sid: str) -> list[str]:
@@ -2802,8 +3373,15 @@ def _build_training_steps_html(training_steps: list[dict] | None) -> list[str]:
         by_iter: dict[int, list] = _dd(list)
         for t in steps:
             by_iter[t["iteration"]].append(t)
+        gaps = [t for t in steps if t.get("note")]
 
         out: list[str] = [
+            *([f'<div class="alert alert-warning py-2 small">&#9888; <b>{len(gaps)} log-capture '
+               f'gap(s)</b>: a task Started/SUCCEEDED line is missing from this log (lines lost '
+               f'by the serial capture), so those tasks are shown as INCOMPLETE or without a '
+               f'start line. Affected: '
+               f'{_html.escape(", ".join(sorted({t["name"] for t in gaps})))}.</div>']
+              if gaps else []),
             '<div class="row g-3 mb-4">',
             f'<div class="col-6 col-md-3"><div class="border rounded p-3 text-center">'
             f'<div class="h4 fw-bold">{total}</div>'
@@ -2850,19 +3428,22 @@ def _build_training_steps_html(training_steps: list[dict] | None) -> list[str]:
             for idx, t in enumerate(it_tasks, 1):
                 row_cls = (
                     ' class="table-danger"'  if t["status"] == "FAILED"
-                    else ' class="table-warning"' if t["status"] == "RUNNING"
+                    else ' class="table-warning"' if t["status"] in ("RUNNING", "INCOMPLETE")
+                    or t.get("note")
                     else ""
                 )
                 span = (str(t["end_line"] - t["start_line"] + 1)
-                        if t["end_line"] else "&#8212;")
+                        if t["end_line"] and t["start_line"] else "&#8212;")
+                note = (f'<div class="small text-danger">&#9888; {_html.escape(t["note"])}</div>'
+                        if t.get("note") else "")
                 out.append(
                     f'<tr{row_cls}>'
                     f'<td class="text-muted small">{idx}</td>'
                     f'<td>{_type_badge(t["task_type"])}</td>'
-                    f'<td class="fw-semibold">{t["name"]}</td>'
+                    f'<td class="fw-semibold">{t["name"]}{note}</td>'
                     f'<td>{_status_badge(t["status"])}</td>'
                     f'<td><code class="small">{t["status_code"] or "&#8212;"}</code></td>'
-                    f'<td class="text-muted small">{t["start_line"]}</td>'
+                    f'<td class="text-muted small">{t["start_line"] or "&#8212;"}</td>'
                     f'<td class="text-muted small">{t["end_line"] or "&#8212;"}</td>'
                     f'<td class="text-muted small">{span}</td>'
                     f'</tr>'
@@ -3015,6 +3596,56 @@ def _build_dram_node_html(platform_infos: list[dict] | None) -> list[str]:
     return parts
 
 
+def _limit_phys_text(info: dict[str, Any], param: str) -> str:
+    """Physical value of the chart limit (single combination only), e.g. "±29 ps"."""
+    if len(info["combos"]) != 1:
+        return "&#8212;"
+    phys = info["combos"][0].get("physical", {}).get(param)
+    unit = info.get("physical_units", {}).get(param, "")
+    if not phys:
+        return "&#8212;"
+    lo, hi = phys
+    return (f"&plusmn;{hi:g} {unit}" if lo == hi else f"&minus;{lo:g} / +{hi:g} {unit}").strip()
+
+
+def _build_rmt_limits_html(info: dict[str, Any] | None) -> str:
+    """Overview card: applied spec RMT limits and the worst-case PASS/FAIL per parameter."""
+    if not info:
+        return ""
+    combos = "; ".join(
+        f"<b>{_html.escape(c['family'])} {c['table_freq']} MT/s</b>"
+        + ("" if c["exact"] else f" (nearest to log {', '.join(map(str, c['log_freqs']))} MT/s)")
+        for c in info["combos"])
+    rows = []
+    for c in info.get("check", []):
+        lim_l, lim_h = c["limit"]
+        lim = f"&plusmn;{lim_h:g}" if lim_l == lim_h else f"&minus;{lim_l:g} / +{lim_h:g}"
+        badge = ('<span class="badge bg-success">PASS</span>' if c["result"] == "PASS"
+                 else '<span class="badge bg-danger">FAIL</span>')
+        fails = (_html.escape(", ".join(c["fails"][:6]))
+                 + (f" &hellip; (+{len(c['fails']) - 6})" if len(c["fails"]) > 6 else "")
+                 if c["fails"] else "&#8212;")
+        row_cls = ' class="table-danger"' if c["fails"] else ""
+        rows.append(
+            f'<tr{row_cls}>'
+            f'<td class="fw-semibold">{c["param"]}</td><td>{lim}</td>'
+            f'<td>{_limit_phys_text(info, c["param"])}</td>'
+            f'<td>{c["worst_minus"]:g}</td><td>{c["worst_plus"]:g}</td>'
+            f'<td>{len(c["fails"])}/{c["n"]}</td><td class="small">{fails}</td><td>{badge}</td></tr>')
+    return (
+        '<div class="section-card">'
+        '<h5 class="fw-bold mb-1">&#x1F4CF; Spec RMT Limits &mdash; ' + combos + '</h5>'
+        '<p class="text-muted small mb-2">Frequency-based pass/fail limits for the memory type '
+        'decoded from the log, used as the &plusmn;Ref lines in every chart. Limits are in RMT '
+        'ticks (timing = UI/64 PI ticks, voltage = Vref steps); a rank fails when either side is '
+        'weaker than the limit. Source: ' + _html.escape(info.get("source") or "projects.json") + '.</p>'
+        '<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">'
+        '<thead class="table-dark"><tr><th>Parameter</th><th>Limit (ticks)</th><th>Limit (physical)</th>'
+        '<th>Worst &minus;</th><th>Worst +</th><th>Failing ranks</th><th>Failing rows (&minus;/+)</th>'
+        '<th>Result</th></tr></thead><tbody>' + "".join(rows) + '</tbody></table></div></div>'
+    )
+
+
 def _build_platform_html_section(platform_infos: list[dict] | None) -> list[str]:
     """Return a list of HTML strings for the Platform tab body."""
     if not platform_infos:
@@ -3040,14 +3671,17 @@ def _build_platform_html_section(platform_infos: list[dict] | None) -> list[str]
         mem_tech = " / ".join(_mem_types) if _mem_types else "N/A"
 
         parts.append('<div class="row g-2 mb-3">')
-        for label, value in [
+        _sys_grid = [
             ("Board / RVP",       board),
             ("CPU",               cpu),
             ("Memory Technology", mem_tech),
             ("Board ID",          bid),
             ("FAB ID",            fab),
             ("PHY IP Version",    phy),
-        ]:
+        ]
+        if pi.get("platform_variant"):
+            _sys_grid.insert(0, ("Platform Variant", pi["platform_variant"]))
+        for label, value in _sys_grid:
             parts.append(
                 f'<div class="col-md-4 col-lg-3"><div class="border rounded p-2 bg-light">'
                 f'<div class="small text-muted">{label}</div>'
@@ -3520,6 +4154,7 @@ def generate_html_report(
     from datetime import datetime as _dt
 
     project_name = project_name or _ACTIVE_PROJECT_NAME
+    _limits_html = _build_rmt_limits_html(_ACTIVE_LIMITS_INFO)
 
     def _sf(v):
         """Return a JSON-safe float, or None for NaN/Inf/None."""
@@ -3702,7 +4337,13 @@ def generate_html_report(
         stem = Path(f).stem
         grp = re.split(r"[_\-\s]+", stem)[0] or stem
         fq, gr = r.get("Frequency"), r.get("Gear")
-        if fq not in (None, "") and str(fq) in stem:
+        _tag = _DTR_TAG_PATTERN.search(stem)
+        if _tag and _tag.group(1).upper() != grp.upper():
+            # DTR tag not leading (e.g. WCL "5600_DIMM10_BCRH"): group by the
+            # tag and keep the whole stem so files stay distinguishable.
+            grp = _tag.group(1).upper()
+            lbl = stem if len(stem) <= 24 else stem[:11] + "\u2026" + stem[-11:]
+        elif fq not in (None, "") and str(fq) in stem:
             lbl = f"{grp} {fq}" + (f" G{gr}" if gr not in (None, "") else "")
         else:
             lbl = stem if len(stem) <= 24 else stem[:11] + "\u2026" + stem[-11:]
@@ -3974,6 +4615,8 @@ def generate_html_report(
         '<div class="rmt-hdr">',
         f'<h1>&#x1F4CA; {TOOL_NAME} &mdash; RMT Margin Analysis Report'
         + (f'<span class="proj-badge">{_html.escape(project_name)}</span>' if project_name else '')
+        + (f'<span class="proj-badge">{_html.escape(_platform_variants_of(platform_infos))}</span>'
+           if _platform_variants_of(platform_infos) else '')
         + '</h1>',
         f'<p class="brand-sub">{TOOL_SUBTITLE}</p>',
         f'<p>Generated: {generated} &nbsp;|&nbsp; Source files: {len(files)}'
@@ -4023,6 +4666,7 @@ def generate_html_report(
 
         # ── Overview tab ──
         '<div class="tab-pane fade show active" id="ovTab">',
+        *([_limits_html] if _limits_html else []),
         # ── Margin degradation summary (only when violations exist) — first row ──
         (
             '<div class="section-card">'
@@ -4790,7 +5434,13 @@ function jmpReset(){
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description=f"{TOOL_NAME} {TOOL_VERSION} - {TOOL_SUBTITLE}: extract RMT data from MRC logs")
+        description=f"{TOOL_NAME} {TOOL_VERSION} - {TOOL_SUBTITLE}: extract RMT data from MRC logs",
+        epilog=("Guides: 'marginiq.cmd --guide [readme|quickstart|cli|install|pipeline|"
+                "projects]' (or 'python rmt_help.py <page>') opens the User Guide, Quick Start, "
+                "Command Line & Automation guide, Installation Guide, this Pipeline Reference "
+                "or the Supported Projects & Spec Limits page in the browser. Exit codes: "
+                "0 ok, 1 no input files, 2 error / no RMT data, 3 approval denied, "
+                "4 --jmp-exe missing, 5 JMP failed (see CLI_AUTOMATION.md)."))
     parser.add_argument(
         "--version", action="version", version=f"{TOOL_NAME} {TOOL_VERSION}")
     parser.add_argument(
@@ -4798,9 +5448,10 @@ def main() -> int:
         default=None,
         help=(
             "Project / platform the logs come from (key, code or name from "
-            "projects.json, e.g. NVL or WCL). Labels the reports and selects "
-            "project-specific START_RMT header aliases. Defaults to the "
-            "registry default."
+            "projects.json, e.g. NVL or WCL). Labels the reports and selects the "
+            "project's parsing rules: START_RMT header aliases, extra block "
+            "markers, DTR flow, platform variants (WCL DDR5 / LPDDR5 RVP) and "
+            "spec RMT limits. Defaults to the registry default."
         ),
     )
     parser.add_argument(
@@ -4821,12 +5472,13 @@ def main() -> int:
         default=False,
         help=(
             "Parse logs as DTR (Dynamic Thermal Range) thermal experiments. "
-            "Each log yields two RMT data sets: a Boot-temperature RMT (under "
-            "the 'Temp Drift RMT Test' task, before the Hit-Enter pause) and a "
-            "Run-temperature RMT (under the 'Rank Margin Tool' task, after it). "
-            "Boot/Run temperatures are read from 'PHY Temperature1' and snapped "
-            "to the nearest setpoint (0 or 90). Use for Thermal Experiment "
-            "profile logs (BCRH / BHRC)."
+            "Each log yields two RMT data sets: a Boot-temperature RMT and a "
+            "Run-temperature RMT. NVL: under the 'Temp Drift RMT Test' task "
+            "(before the Hit-Enter pause) and the 'Rank Margin Tool' task (after "
+            "it), temperatures from 'PHY Temperature1' snapped to 0 / 90. "
+            "WCL ('dtr' rules in projects.json): first and last 'Rank Margin "
+            "Tool' run, temperatures from the BCRH / BHRC tag in the file name. "
+            "Use for Thermal Experiment profile logs (BCRH / BHRC)."
         ),
     )
     parser.add_argument(
@@ -4917,6 +5569,17 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--rmt-limits",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use the project's spec RMT limits (projects.json 'rmt_limits', e.g. WCL "
+            "DDR5 / LPDDR5 per frequency read from the log) as the +/-Ref lines in "
+            "JMP / HTML / PPT and add a spec PASS/FAIL table. --no-rmt-limits uses the "
+            "axis-config +/-Ref instead. No effect for projects without limits (NVL)."
+        ),
+    )
+    parser.add_argument(
         "--jmp-from-csv",
         default=None,
         nargs="+",
@@ -4958,6 +5621,11 @@ def main() -> int:
               f"{', '.join(_registry['projects'])} (see projects.json).")
         return 2
     set_param_aliases(project_param_aliases(_project_key, _registry))
+    set_rmt_fallback_markers(project_rmt_fallback_markers(_project_key, _registry))
+    set_project_rules(project_dtr_rules(_project_key, _registry),
+                      project_platform_variants(_project_key, _registry),
+                      project_require_rmt_task(_project_key, _registry),
+                      project_rmt_limits(_project_key, _registry))
     project_name = project_label(_project_key, _registry)
     global _ACTIVE_PROJECT_NAME
     _ACTIVE_PROJECT_NAME = project_name
@@ -5101,6 +5769,9 @@ def main() -> int:
             except Exception as _ml_err:
                 print(f"  [warn] could not load metadata sidecar: {_ml_err}")
 
+        axis_cfg = _setup_rmt_limits(axis_cfg, csv_rows, _csv_meta_platform, args.rmt_limits)
+        _save_limits_metadata(outdir)
+
         if csv_rows:
             try:
                 generate_html_report(
@@ -5121,7 +5792,12 @@ def main() -> int:
         jsl_script = generate_jmp_jsl(_jmp_csv_input, outdir, _active_params, axis_cfg, rows=csv_rows)
         print(f"Generated JMP JSL script: {jsl_script}")
         if not args.jmp_jsl_only:
-            run_jmp_script(Path(args.jmp_exe), jsl_script)
+            try:
+                run_jmp_script(Path(args.jmp_exe), jsl_script)
+            except (FileNotFoundError, PermissionError, OSError,
+                    subprocess.CalledProcessError) as _jmp_err:
+                print(f"Failed to run JMP charts: {_jmp_err}")
+                return 5
             print("JMP script executed successfully.")
             jmp_charts_dir = outdir / "jmp_charts"
             if jmp_charts_dir.exists() and any(jmp_charts_dir.glob("*.png")):
@@ -5213,6 +5889,21 @@ def main() -> int:
         write_csv(_csv_for_jmp, xl_rows, EXTENDED_COLUMNS)
         print(f"CSV written: {_csv_for_jmp}")
 
+        if _ACTIVE_RMT_LIMITS and args.rmt_limits:
+            # Memory family per file comes from the metadata sidecar of the run
+            # that produced the workbook (output folder or next to the .xlsx).
+            _xl_pinfo = None
+            for _mp in (outdir / "rmt_metadata.json", _excel_path.parent / "rmt_metadata.json"):
+                if _mp.is_file():
+                    try:
+                        import json as _jx
+                        _xl_pinfo = _jx.loads(_mp.read_text(encoding="utf-8")).get("platform_infos")
+                    except (OSError, ValueError) as _mx_err:
+                        print(f"  [warn] could not read {_mp}: {_mx_err}")
+                    break
+            axis_cfg = _setup_rmt_limits(axis_cfg, xl_rows, _xl_pinfo, args.rmt_limits)
+            _save_limits_metadata(outdir)
+
         # ── HTML (initial, without JMP charts) ──────────────────────
         try:
             generate_html_report(
@@ -5229,7 +5920,12 @@ def main() -> int:
         jsl_script = generate_jmp_jsl(_csv_for_jmp, outdir, _active_params, axis_cfg, rows=xl_rows)
         print(f"Generated JMP JSL script: {jsl_script}")
         if not args.jmp_jsl_only:
-            run_jmp_script(Path(args.jmp_exe), jsl_script)
+            try:
+                run_jmp_script(Path(args.jmp_exe), jsl_script)
+            except (FileNotFoundError, PermissionError, OSError,
+                    subprocess.CalledProcessError) as _jmp_err:
+                print(f"Failed to run JMP charts: {_jmp_err}")
+                return 5
             print("JMP script executed successfully.")
             jmp_charts_dir = outdir / "jmp_charts"
             if jmp_charts_dir.exists() and any(jmp_charts_dir.glob("*.png")):
@@ -5291,6 +5987,11 @@ def main() -> int:
             pinfo = None
             print(f"  [warn] platform info skipped for {file_path.name}: {_pi_exc}")
         if pinfo is not None:
+            _variant = resolve_platform_variant(
+                _ACTIVE_PLATFORM_VARIANTS, _memory_technology(pinfo.get("dimms", [])),
+                pinfo.get("board"))
+            if _variant:
+                pinfo["platform_variant"] = _variant
             try:
                 pinfo["mr_odt"] = parse_mr_odt_info(text, file_path.name)
             except Exception as _mr_exc:
@@ -5304,6 +6005,11 @@ def main() -> int:
 
     if not all_rows:
         print("No START_RMT blocks found in input files.")
+        if _ACTIVE_REQUIRE_RMT_TASK or _ACTIVE_FALLBACK_MARKERS:
+            _mk = ["START_RMT"] + [m for m in _ACTIVE_FALLBACK_MARKERS if m != "START_RMT"]
+            print(f"  {project_name}: RMT data ({' / '.join(_mk)}) is only taken from inside "
+                  f"the 'Rank Margin Tool' MRC task - see the [warn] lines above. Re-run "
+                  f"the board with RMT enabled so the task prints its block.")
         return 2
 
     # Combined outputs
@@ -5356,6 +6062,8 @@ def main() -> int:
     _axis_cfg_main = load_axis_config(
         Path(args.jmp_axis_config) if args.jmp_axis_config else None
     )
+    _axis_cfg_main = _setup_rmt_limits(_axis_cfg_main, all_rows, platform_infos, args.rmt_limits)
+    _save_limits_metadata(outdir)
 
     try:
         build_ppt_professional(
@@ -5388,7 +6096,9 @@ def main() -> int:
             return 4
 
         try:
-            axis_cfg = load_axis_config(Path(args.jmp_axis_config) if args.jmp_axis_config else None)
+            axis_cfg = apply_rmt_limits(
+                load_axis_config(Path(args.jmp_axis_config) if args.jmp_axis_config else None),
+                _ACTIVE_LIMITS_INFO)
             jsl_script = generate_jmp_jsl(extended_csv, outdir, chart_fields if chart_fields else PARAMS, axis_cfg, rows=all_rows)
             print(f"Generated JMP JSL script: {jsl_script}")
             if not args.jmp_jsl_only:

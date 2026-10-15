@@ -59,14 +59,18 @@ most once a day. See [Staying up to date](README.md#staying-up-to-date).
 ## Option A: GUI (recommended)
 
 1. Double-click the **MarginIQ** desktop icon (or `Launch_RMT_GUI.bat` / `MarginIQ.lnk` in the tool folder).
-2. **Tab 1 · Input & Workflow:** choose the **Project** (e.g. *Nova Lake (NVL)*) and the
-   **Profile** (*Thermal Experiment (DTR)* for BCRH / BHRC logs). *Add Folder…* your logs, then
-   click **Generate CSV & Continue →**.
-3. **Tab 2 · Parameters & Axis:** tick the parameters, click **↻ Recalculate from data**, and
-   set the default **± Ref** (*Apply ±Ref to all*). Optionally click **▶ Open** under
-   *JMP Graph Builder* to tune the charts live in JMP.
+2. **Tab 1 · Input & Workflow:** choose the **Project** (e.g. *Nova Lake (NVL)* or
+   *Wildcat Lake (WCL)*) and the **Profile** (*Thermal Experiment (DTR)* for BCRH / BHRC logs).
+   *Add Folder…* your logs, then click **Generate CSV & Continue →**.
+3. **Tab 2 · Parameters & Axis:** tick the parameters. Min / Max / Inc are already
+   recalculated from this log's data when the tab opens (click **↻ Recalculate from data**
+   again after editing the file list). For **WCL**, ±Ref is already set to the spec RMT limit
+   for the log's memory type (DDR5 / LPDDR5) and frequency. Untick *Spec RMT limits as ±Ref*
+   to use your own. Otherwise set the default **± Ref** (*Apply ±Ref to all*). Optionally click
+   **▶ Open** under *JMP Graph Builder* to tune the charts live in JMP.
 4. **Tab 3 · Preview & Run:** click **▶ Run Pipeline**, then **Open HTML Report**.
-5. Next batch? Click **↺ Analyze Another Log**. Tab 1 is reset to *Boot / MRC logs*.
+5. Next batch? Click **↺ Analyze Another Log** (or `Ctrl+N`). Tab 1 is greyed out from
+   *Run Pipeline* until you do; it is then reset to *Boot / MRC logs*.
 
 ## Option B: Agentic (GitHub Copilot)
 
@@ -128,6 +132,24 @@ Enter stage number (1-4) [default: 4]:
 
 **For most users:** just press **Enter** to accept the default (Stage 4 — full report).
 
+Next the menu asks for the platform and profile:
+
+```
+Project (platform the logs come from):
+  1) Nova Lake (NVL)  ← default
+  2) Wildcat Lake (WCL)
+Select project [1-2, default: NVL]: 2
+
+Experiment profile:
+  1) Non-Thermal (single boot)  ← default
+  2) Thermal Experiment (DTR, BCRH / BHRC logs)  -> adds --dtr
+Select profile [1-2, default: 1]:
+
+Use the WCL spec RMT limits (per memory type + frequency) as ±Ref? (y/n) [default: y]:
+```
+
+The last question appears only for projects with spec limits (WCL).
+
 ### Step 4: Provide Paths
 
 The script will ask for:
@@ -160,16 +182,32 @@ The script will start processing your files and show progress. When finished, ch
 
 ## For Automation: Quick Copy-Paste Commands
 
-Use these if you want to run the same extraction repeatedly without prompts.
+Use these to run the same extraction repeatedly without prompts. **`marginiq.cmd`** (repository
+root) works from any folder in Command Prompt or PowerShell and returns the pipeline exit code.
+The complete guide for scripts, schedulers and CI is [CLI_AUTOMATION.md](CLI_AUTOMATION.md).
+`.venv\Scripts\python.exe rmt_pipeline_runner.py --cmds` prints ready-made commands with your
+paths.
 
-### Simplest (Just CSV + Excel):
+### Simplest (CSV + Excel + HTML + native PPT, no JMP):
 
-```powershell
-.venv\Scripts\python.exe ".\rmt_log_pipeline.py" --project NVL --input "C:\path\to\logs" --pattern "*.txt" --outdir "C:\path\to\output" --no-ask-chart-approval "--chart-fields="
+```bat
+marginiq.cmd --project NVL --input "C:\path\to\logs" --pattern "*.log" --outdir "C:\path\to\output" --no-ask-chart-approval
 ```
 
-Replace `C:\path\to\logs` with your input folder.
-Replace `C:\path\to\output` with your output folder.
+### Wildcat Lake (DDR5 or LPDDR5 RVP; memory type, frequency and spec limits come from the log):
+
+```bat
+marginiq.cmd --project WCL --input "C:\path\to\wcl_logs" --pattern "*.log" --outdir "C:\path\to\output" --no-ask-chart-approval
+```
+
+### Thermal DTR (BCRH / BHRC), NVL or WCL:
+
+```bat
+marginiq.cmd --project WCL --dtr --input "C:\path\to\dtr_logs" --pattern "*.log" --outdir "C:\path\to\output" --no-ask-chart-approval
+```
+
+Replace `C:\path\to\…` with your folders. Check the result with `echo %ERRORLEVEL%`
+(0 = OK, 1 = no files, 2 = error / no RMT data, 4 = `--jmp-exe` missing, 5 = JMP failed).
 
 ---
 
@@ -239,7 +277,9 @@ Write-Host "Results saved to: $outdir"
 
 > **Tip:** To change Y-axis scale, tick increments, or reference lines, edit `jmp_axis_settings.json` in the repository root (or use GUI Tab 2) — no code changes needed. `defaults.ref_line_plus` / `ref_line_minus` set the default ±Ref used for any parameter without its own `ref_line`.
 >
-> **Thermal (DTR) logs:** add `--dtr`. **Wildcat Lake:** use `--project WCL`. The HTML report always includes the **Mode Registers** and **ODT** tabs.
+> **Thermal (DTR) logs:** add `--dtr`. **Wildcat Lake:** use `--project WCL`; the spec RMT
+> limits for the log's memory type and frequency become the ±Ref lines (`--no-rmt-limits`
+> to switch off). The HTML report always includes the **Mode Registers** and **ODT** tabs.
 
 ---
 
@@ -311,6 +351,11 @@ Various reasons charts may not appear:
 |------|---------|
 | Interactive mode | `python rmt_pipeline_runner.py` |
 | Quick mode | `python rmt_pipeline_runner.py --quick` |
+| Print cmd.exe commands | `python rmt_pipeline_runner.py --cmds` |
+| Open a guide in the browser | `marginiq.cmd --guide quickstart` (also `readme`, `cli`, `install`, `pipeline`, `projects`) or menu option 8 |
+| Non-interactive run | `marginiq.cmd --project WCL --input … --outdir … --no-ask-chart-approval` |
+| Thermal (DTR) logs | add `--dtr` |
+| WCL own ±Ref instead of spec limits | add `--no-rmt-limits` |
 | CSV only | `"--chart-fields="` |
 | CSV + Excel | `"--chart-fields="` |
 | CSV + Excel + PPT | `--chart-fields "RxDqVrefByte,TxVref,ClkGrpPi"` |

@@ -1,6 +1,6 @@
 ---
 name: rmt-margin-plots
-description: Run MarginIQ (Intel CCG CVE Memory RMT Margin Analysis Tool) to extract START_RMT blocks from MRC debug logs of any supported project (Nova Lake, Wildcat Lake, ...) and produce CSV, Excel, JMP scatter charts, an HTML report (with DDR5 Mode Register and ODT tabs), and a PowerPoint deck. Use when asked to plot/chart/analyze RMT margins, RxDqVrefByte/TxVref/RecEnDelay margins, report MR / RTT_WR / ODT values, build RMT slides, or convert lab logs into margin charts.
+description: Run MarginIQ (Intel CCG CVE Memory RMT Margin Analysis Tool) to extract START_RMT blocks from MRC debug logs of any supported project (Nova Lake, Wildcat Lake, ...) and produce CSV, Excel, JMP scatter charts, an HTML report (with DDR5 Mode Register and ODT tabs), and a PowerPoint deck. Use when asked to plot/chart/analyze RMT margins, RxDqVrefByte/TxVref/RecEnDelay margins, report MR / RTT_WR / ODT values, build RMT slides, convert lab logs into margin charts, or open / explain the MarginIQ guides (user guide, CLI & automation, WCL spec-limits table).
 ---
 
 # RMT Margin Plotting (MarginIQ)
@@ -25,6 +25,8 @@ section "Agentic mode (GitHub Copilot)".
 | `rmt_project.py` | Branding / version / project-registry helper (imported by the CLI and GUI) |
 | `rmt_update.py` | Rate-limited "newer version on the server?" check; the CLI prints `[MarginIQ update] …` when the clone is behind |
 | `rmt_dram.py` / `dram_nodes.json` | DDR5 SPD decode + DRAM part-number / die / process-node knowledge base (Platform tab + PPT) |
+| `rmt_help.py` / `marginiq.cmd --guide` | Built-in Help viewer: renders the guides (and a projects / spec-limits page from `projects.json`) as HTML and opens them in the browser. The agent **may** run it, but only when the user asks to open / show a guide (see "Guides" below) |
+| `marginiq.cmd` | Command-prompt wrapper around `rmt_log_pipeline.py` (same flags); `--guide [page]` opens a guide |
 
 All paths above are relative to the repository root.
 
@@ -48,6 +50,35 @@ All paths above are relative to the repository root.
 6. **JMP is single-instance:** a JMP run force-closes any open JMP window first.
    If `Get-Process jmp` shows JMP running, warn the user (unsaved work) and get
    their OK before a `--generate-jmp-charts` / `--jmp-from-*` run.
+
+## Guides (help in agentic mode)
+
+- **How-to / "what does X mean" questions:** answer from the Markdown guides in the repo
+  (`README.md`, `RMT_QUICKSTART.md`, `CLI_AUTOMATION.md`, `INSTALL.md`,
+  `RMT_LOG_PIPELINE_README.md`) and `projects.json`. Quote the relevant section and link the
+  file. Do **not** open a browser for these.
+- **"Open / show me the guide, the CLI help, the spec-limits table …":** open it with the
+  built-in viewer. It renders the page and hands it to the default browser, then returns
+  immediately (it does not block):
+
+  ```powershell
+  $tool = (Resolve-Path (git rev-parse --show-toplevel)).Path
+  & (Join-Path $tool ".venv\Scripts\python.exe") (Join-Path $tool "rmt_help.py") <page> [--anchor=<section-id>]
+  ```
+
+  | User asks for | `<page>` (`--anchor`) |
+  |---------------|----------------------|
+  | User guide / README / overview | `readme` |
+  | What's new | `readme --anchor=-whats-new-in-20` |
+  | FAQ / troubleshooting | `readme --anchor=-frequently-asked-questions` |
+  | Quick start | `quickstart` |
+  | Command line, automation, exit codes, `rmt_metadata.json` | `cli` |
+  | Installation / setup / JMP licence | `install` |
+  | Every CLI flag (pipeline manual) | `pipeline` |
+  | Supported projects, WCL DDR5 / LPDDR5 spec RMT limits table | `projects` |
+
+  Report the page that was opened (the script prints `Help page: <path>`). If no browser
+  can be started (exit code 2), give the user the path or answer from the `.md` file instead.
 
 ## What actually gets produced
 
@@ -104,9 +135,17 @@ Chart parameters (`--chart-fields`, comma separated; all of them is the default)
 ### Thermal (DTR) logs
 
 Add `--dtr` when the logs are Thermal Experiment / Temp-Drift profiles (BCRH / BHRC).
-Each log then yields two data sets — a Boot-temperature RMT (under the
-`Temp Drift RMT Test` task) and a Run-temperature RMT (under `Rank Margin Tool`) —
-with `BootTemp` / `RunTemp` snapped to the nearest setpoint (0 or 90).
+Each log then yields two data sets: a Boot-temperature RMT and a Run-temperature RMT.
+For NVL these come from the `Temp Drift RMT Test` and `Rank Margin Tool` tasks, with
+`BootTemp` / `RunTemp` snapped to the nearest setpoint (0 or 90). For WCL (`dtr` rules in
+`projects.json`) they come from the first and last `Rank Margin Tool` runs
+(`START_BYTE_RMT` blocks), and the temperatures come from the BCRH / BHRC tag in the file
+name. WCL reports also name the platform variant (WCL DDR5 RVP / WCL LPDDR5 RVP), which is
+decoded from the log.
+For WCL, the spec RMT limits in `projects.json` (`rmt_limits`, per DDR5 / LPDDR5 and
+frequency) are applied automatically as the ±Ref lines and as a Spec RMT Limits PASS/FAIL
+table. Report any `[warn] RMT spec FAIL …` lines to the user. Use `--no-rmt-limits` only if
+the user asks for their own ±Ref.
 If the user mentions temperature drift, hot/cold, BCRH or BHRC, ask whether to use `--dtr`.
 
 ## Procedure
@@ -165,10 +204,14 @@ on lab machines and comes from Company Portal; see `INSTALL.md` › *JMP Pro*.
 ### 3. Sanity-check the logs before a long run
 
 ```powershell
-Select-String -Path "<input>\*.txt" -Pattern "START_RMT" | Select-Object -First 3
+Select-String -Path "<input>\*.txt" -Pattern "START_RMT|START_BYTE_RMT" | Select-Object -First 3
 ```
 
 No matches means the logs hold no RMT data — report that instead of running the pipeline.
+For **WCL** the block must also sit inside `GREEN MRC task -- Rank Margin Tool -- Started`
+… `SUCCEEDED`. A log whose Rank Margin Tool never ran (only per-training-step
+"Composite UI" blocks) is skipped with `[warn] <file>: NO RMT DATA - …`; tell the user to
+re-run the board with RMT enabled.
 
 ### 4. Run
 
@@ -233,6 +276,16 @@ All of these still need `--outdir`, and the JMP variants still need `--jmp-exe`.
 List the generated artifacts with their full paths and flag anything skipped
 (e.g. "JMP not installed — Excel + HTML only"). Do not open the PPT/GUI.
 
+Also report these console lines when present:
+
+| Line | Tell the user |
+|------|---------------|
+| `[warn] <file>: NO RMT DATA - …` | That log was skipped: its Rank Margin Tool task never ran or printed no block (WCL) |
+| `[info] RMT limits (<family> <MT/s> MT/s, ticks): …` | Which WCL spec limits were applied (memory type + frequency from the log) |
+| `[warn] RMT spec FAIL <Param> …` | The spec failures with the failing ranks. The same data is in `<outdir>\rmt_metadata.json` → `rmt_limits` (`overall`, `check[*].fails`) |
+| `[warn] … log capture gap; marked INCOMPLETE.` | The serial capture lost lines; the training-step timeline is incomplete, but the margins are fine |
+| `[warn] JMP axis hides data for …` | The axis JSON clips points; suggest a wider axis |
+
 If the pipeline output contains a line starting with `[MarginIQ update]`, tell the
 user a newer MarginIQ version is available and that they should run `git pull` in
 the repository (then `setup.bat --no-prompt` if `requirements.txt` changed). Do
@@ -244,9 +297,9 @@ so don't pass `--no-update-check` routinely.
 
 | Code | Meaning | Action |
 |------|---------|--------|
-| 0 | Success | Report artifacts |
+| 0 | Success (a WCL spec FAIL is still 0) | Report artifacts and any `RMT spec FAIL` lines |
 | 1 | No input files matched `--input` / `--pattern` | Re-check the path and pattern with the user |
-| 2 | Input CSV / charts dir / Excel not found, no RMT blocks, unknown `--project`, or bad CLI arguments | Re-check the path / project with the user |
+| 2 | Input CSV / charts dir / Excel not found, no RMT blocks (WCL: `NO RMT DATA` in every file), unknown `--project`, or bad CLI arguments | Re-check the path / project with the user; quote the `[warn]` lines |
 | 3 | Chart approval denied (interactive mode only) | Always pass `--no-ask-chart-approval` |
 | 4 | JMP chart generation requested without `--jmp-exe` | Resolve JMP or run base mode |
 | 5 | JMP failed to generate or run the charts | Report the error; the JSL is kept in `<outdir>` for a manual run |
@@ -265,8 +318,13 @@ copy and pass it via `--jmp-axis-config`. Never edit the shipped
 No code change is needed; re-run with
 `--generate-jmp-charts` (or `--jmp-from-csv`) afterwards.
 
+For **WCL** the spec RMT limits replace the `ref_line` values automatically (the limit for the
+log's memory type + frequency), and the axis is widened so the limit lines stay visible. Pass
+`--no-rmt-limits` only when the user explicitly wants their own ±Ref.
+
 ## Reference docs
 
 - `README.md` — user guide (install + shortcuts, GUI, **Agentic mode**, CLI, report, config)
 - `RMT_QUICKSTART.md` — copy-paste examples
+- `CLI_AUTOMATION.md` — command-prompt / automation guide (recipes, exit codes, `rmt_metadata.json` schema, console messages)
 - `RMT_LOG_PIPELINE_README.md` — full CLI reference

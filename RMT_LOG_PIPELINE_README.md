@@ -2,7 +2,7 @@
 
 *Intel CCG CVE Memory RMT Margin Analysis Tool*
 
-📖 **Quick Links:** [Main README](README.md) · [Quick Start Guide](RMT_QUICKSTART.md) · [Agentic mode](README.md#-agentic-mode-github-copilot) · [To Top](#marginiq-rmt-log-pipeline---complete-reference-manual)
+📖 **Quick Links:** [Main README](README.md) · [Quick Start Guide](RMT_QUICKSTART.md) · [CLI & Automation Guide](CLI_AUTOMATION.md) · [Agentic mode](README.md#-agentic-mode-github-copilot) · [To Top](#marginiq-rmt-log-pipeline---complete-reference-manual)
 
 ---
 
@@ -26,8 +26,12 @@ The same engine runs in three modes: the **GUI** (MarginIQ desktop icon / `Launc
 
 Script path:
 - `rmt_log_pipeline.py` (repository root)
+- `marginiq.cmd` (repository root): the same pipeline for Command Prompt / automation. It runs
+  from any folder with the repo `.venv`, UTF-8 output and the exit code passed through. See
+  [CLI_AUTOMATION.md](CLI_AUTOMATION.md). `marginiq.cmd --guide pipeline` opens this manual in the
+  browser (built-in viewer; other pages: `readme`, `quickstart`, `cli`, `install`, `projects`).
 
-> All commands below use `.venv/Scripts/python.exe`, the interpreter created by [setup.bat](setup.bat). Run them from the repository root (the folder that contains `setup.bat`).
+> All commands below use `.venv/Scripts/python.exe`, the interpreter created by [setup.bat](setup.bat). Run them from the repository root (the folder that contains `setup.bat`). Replace `.venv\Scripts\python.exe rmt_log_pipeline.py` with `marginiq.cmd` to run from anywhere.
 
 ---
 
@@ -45,6 +49,19 @@ Each row holds one minus/plus pair per column of the `Params:` header (16 values
 standard parameters). Values are mapped by **header name**, so a different column order is
 handled. Project aliases from `projects.json` (e.g. WCL `RxVref` → `RxDqVrefByte`) are applied
 when `--project` is given.
+
+### Project-specific rules (`--project`)
+
+| Rule | NVL (DDR5) | WCL (DDR5 RVP / LPDDR5 RVP) |
+|------|------------|-----------------------------|
+| Block markers | `START_RMT` … `STOP_RMT` | `START_RMT` (DDR5) or `START_BYTE_RMT` … `STOP_BYTE_RMT` (LPDDR5, per byte-rank) |
+| Which blocks | Inside the *Rank Margin Tool* task; logs without task markers are read anywhere | **Only** inside *Rank Margin Tool -- Started … SUCCEEDED* (`require_rmt_task`). Per-training-step "Composite UI" blocks are ignored; a log without RMT data prints `[warn] … NO RMT DATA …` and is skipped |
+| `--dtr` | *Temp Drift RMT Test* + *Hit Enter* + *Rank Margin Tool*, temps from `PHY Temperature1` | First / last *Rank Margin Tool* run, temps from **BCRH** / **BHRC** in the file name |
+| Platform variant | – | `WCL DDR5 RVP` / `WCL LPDDR5 RVP` from the decoded memory (`DDR5 CSODIMM`, `LPDDR5X Memory Down`) or `Detected board:` |
+| ±Ref | Axis JSON | Spec RMT limits for the memory type + frequency read from the log (`rmt_limits`); `--no-rmt-limits` = axis JSON |
+
+All rules are data in [`projects.json`](projects.json); see
+[README › Projects](README.md#projects--projectsjson).
 
 Additionally parsed for the HTML report and `rmt_metadata.json`:
 
@@ -252,8 +269,8 @@ The wrapper will guide you through:
 
 | Switch | Default | Purpose |
 |--------|---------|---------|
-| `--project` | `NVL` (registry default) | Project from `projects.json` (key, code or name, e.g. `NVL`, `WCL`, `"Wildcat Lake"`); labels reports and selects START_RMT header aliases. Unknown value → exit 2 |
-| `--dtr` | False | Parse Thermal Experiment (DTR, BCRH/BHRC) logs: Boot-temp + Run-temp RMT per log |
+| `--project` | `NVL` (registry default) | Project from `projects.json` (key, code or name, e.g. `NVL`, `WCL`, `"Wildcat Lake"`); labels reports and selects the project rules (header aliases, block markers, RMT-task rule, DTR flow, platform variants, spec limits — see [Project-specific rules](#project-specific-rules---project)). Unknown value → exit 2 |
+| `--dtr` | False | Parse Thermal Experiment (DTR, BCRH/BHRC) logs: Boot-temp + Run-temp RMT per log (NVL: Temp Drift RMT Test + Rank Margin Tool; WCL: first / last Rank Margin Tool run, temps from BCRH / BHRC in the file name) |
 | `--version` | - | Print the MarginIQ version |
 | `--input` | *required* | Path(s) to input folder(s) or file(s) |
 | `--pattern` | `*.txt` | File glob pattern (when input is folder) |
@@ -267,6 +284,7 @@ The wrapper will guide you through:
 | `--jmp-exe` | None | Path to jmp.exe executable |
 | `--jmp-jsl-only` | False | Generate JSL script without launching JMP |
 | `--no-update-check` | False | Skip the check for a newer MarginIQ on the git server (rate-limited to once per 24 h; see [README › Staying up to date](README.md#staying-up-to-date)) |
+| `--rmt-limits` / `--no-rmt-limits` | on | Projects with `rmt_limits` in `projects.json` (WCL): use the spec limit for the memory type + frequency read from each log as ±Ref in JMP / HTML / PPT and add the Spec RMT Limits PASS/FAIL table. `--no-rmt-limits` uses the axis-config ±Ref. No effect for NVL |
 
 ---
 
@@ -305,11 +323,16 @@ In `--outdir`, the script creates:
   number, after *Test Configuration*, with the sources in the slide notes.
 
 6. `rmt_metadata.json`
-- Tool version, project, training steps, platform info and MR / ODT data
-  (`platform_infos[*].mr_odt`). Reused by later `--jmp-from-csv` runs in the same `--outdir`.
+- Tool version, project, training steps (SUCCEEDED / FAILED / RUNNING / INCOMPLETE with a
+  log-gap `note`), platform info (incl. `platform_variant` for WCL) and MR / ODT data
+  (`platform_infos[*].mr_odt`). For WCL also `rmt_limits` (`overall` PASS/FAIL, `combos`,
+  `chart` ±Ref, per-parameter `check`). Reused by later `--jmp-from-csv` runs in the same
+  `--outdir`. Schema: [CLI_AUTOMATION.md › rmt_metadata.json](CLI_AUTOMATION.md#82-rmt_metadatajson).
 
 7. `RMT_Summary.pptx`
-- Title/coverage slide (MarginIQ branding, project, tool version).
+- Title/coverage slide (MarginIQ branding, project, platform variant, tool version).
+- Test Configuration (platform variant, board, memory technology, DIMMs).
+- WCL: **Spec RMT Limits** slide (limit in ticks and ps / mV, worst −/+, failing rows, PASS/FAIL).
 - Average window width text summary.
 - Overall chart (approved fields only).
 - Frequency comparison chart (approved fields only).
@@ -498,7 +521,10 @@ Notes:
 
 ## Advanced Usage: Direct Script Commands
 
-For power users and automation, use the main script directly with full CLI control. These examples use PowerShell line continuation (backtick) for readability:
+For power users and automation, use the main script directly with full CLI control. For
+Command Prompt, schedulers and other automation tools use `marginiq.cmd` and see
+[CLI_AUTOMATION.md](CLI_AUTOMATION.md). These examples use PowerShell line continuation
+(backtick) for readability:
 
 **Stage 1: CSV Only**
 ```powershell
@@ -530,8 +556,8 @@ python "rmt_log_pipeline.py" `
 
 | Switch | Default | Purpose |
 |--------|---------|---------|
-| `--project` | `NVL` (registry default) | Project from `projects.json` (key, code or name, e.g. `NVL`, `WCL`, `"Wildcat Lake"`); labels reports and selects START_RMT header aliases. Unknown value → exit 2 |
-| `--dtr` | False | Parse Thermal Experiment (DTR, BCRH/BHRC) logs: Boot-temp + Run-temp RMT per log |
+| `--project` | `NVL` (registry default) | Project from `projects.json` (key, code or name, e.g. `NVL`, `WCL`, `"Wildcat Lake"`); labels reports and selects the project rules (header aliases, block markers, RMT-task rule, DTR flow, platform variants, spec limits — see [Project-specific rules](#project-specific-rules---project)). Unknown value → exit 2 |
+| `--dtr` | False | Parse Thermal Experiment (DTR, BCRH/BHRC) logs: Boot-temp + Run-temp RMT per log (NVL: Temp Drift RMT Test + Rank Margin Tool; WCL: first / last Rank Margin Tool run, temps from BCRH / BHRC in the file name) |
 | `--version` | - | Print the MarginIQ version |
 | `--input` | *required* | Path(s) to input folder(s) or file(s) |
 | `--pattern` | `*.txt` | File glob pattern (when input is folder) |
@@ -547,6 +573,7 @@ python "rmt_log_pipeline.py" `
 | `--no-update-check` | False | Skip the check for a newer MarginIQ on the git server (rate-limited to once per 24 h; see [README › Staying up to date](README.md#staying-up-to-date)) |
 | `--ppt-template` | None | Path to .pptx template used for the JMP-charts PPT |
 | `--jmp-axis-config` | None | Path to `jmp_axis_settings.json` for chart axis customisation. `defaults.ref_line_plus` / `ref_line_minus` (default ±10) apply to any parameter without its own `ref_line` |
+| `--rmt-limits` / `--no-rmt-limits` | on | Projects with `rmt_limits` in `projects.json` (WCL): use the spec limit for the memory type + frequency read from each log as ±Ref in JMP / HTML / PPT and add the Spec RMT Limits PASS/FAIL table. `--no-rmt-limits` uses the axis-config ±Ref. No effect for NVL |
 
 ---
 
@@ -556,12 +583,12 @@ The script returns exit codes to indicate success or failure:
 
 | Code | Status | Meaning | Action |
 |------|--------|---------|--------|
-| 0 | ✅ Success | Extraction completed | Check output folder |
+| 0 | ✅ Success | Outputs written. A WCL spec FAIL is still 0; read `rmt_metadata.json` → `rmt_limits.overall` | Check output folder |
 | 1 | ⚠️ Warning | No input files matched `--input` / `--pattern` | Check the path and pattern |
-| 2 | ❌ Error | Invalid arguments, missing files, no START_RMT blocks, or unknown `--project` | Review --help, paths and `projects.json` |
+| 2 | ❌ Error | Invalid / unknown arguments, unknown `--project`, missing `--input` / CSV / Excel / charts folder, no RMT data in any input file (e.g. WCL `NO RMT DATA`), or `.venv` missing (`marginiq.cmd`) | Review --help, paths, the `[warn]` lines and `projects.json` |
 | 3 | ❌ Denied | Chart approval was rejected | Re-run with --no-ask-chart-approval or approve charts |
-| 4 | ❌ Config | JMP executable not found | Verify --jmp-exe path |
-| 5 | ❌ Runtime | JMP execution failed | Check JSL script or JMP installation |
+| 4 | ❌ Config | JMP needed but `--jmp-exe` not given | Add --jmp-exe |
+| 5 | ❌ Runtime | JMP could not be started (e.g. `jmp.exe` path not found) or failed | Check the --jmp-exe path, JSL script or JMP installation |
 
 ---
 

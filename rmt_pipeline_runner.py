@@ -14,10 +14,82 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from rmt_project import TOOL_NAME, TOOL_SUBTITLE, TOOL_VERSION
+from rmt_project import (
+    TOOL_NAME, TOOL_SUBTITLE, TOOL_VERSION,
+    load_projects, project_label, project_rmt_limits,
+)
 
 # Configuration
 HERE = Path(__file__).resolve().parent
+
+# Options shared by every pipeline call, chosen once per session by
+# _prompt_project_profile(): project key, DTR (thermal) profile, spec limits.
+RUN_OPTIONS: dict = {"project": None, "dtr": False, "rmt_limits": True}
+
+
+def open_guide(page: str = "readme") -> int:
+    """Open a MarginIQ guide in the browser via the built-in viewer (rmt_help)."""
+    import rmt_help
+    try:
+        path = rmt_help.open_help(page)
+    except (OSError, KeyError) as exc:
+        print(f"❌ Could not open the guide '{page}': {exc}")
+        return 2
+    print(f"📖 Opened {path.name} in your browser.")
+    return 0
+
+
+def _prompt_guide() -> None:
+    import rmt_help
+    pages = [*rmt_help.DOCS.items(), (rmt_help.PROJECTS_PAGE[0], (None, rmt_help.PROJECTS_PAGE[2]))]
+    print()
+    for i, (key, (_md, title)) in enumerate(pages, 1):
+        print(f"  {i}) {title}  ({key})")
+    raw = input(f"Select guide [1-{len(pages)}, default: 1]: ").strip()
+    idx = int(raw) - 1 if raw.isdigit() and 1 <= int(raw) <= len(pages) else 0
+    open_guide(pages[idx][0])
+
+
+def _common_args(log_parsing: bool = True) -> list[str]:
+    """--project / --dtr / --no-rmt-limits for the current session choices."""
+    args: list[str] = []
+    if RUN_OPTIONS["project"]:
+        args += ["--project", RUN_OPTIONS["project"]]
+    if log_parsing and RUN_OPTIONS["dtr"]:
+        args += ["--dtr"]
+    if not RUN_OPTIONS["rmt_limits"]:
+        args += ["--no-rmt-limits"]
+    return args
+
+
+def _prompt_project_profile(log_parsing: bool) -> None:
+    """Ask for the project (projects.json), the DTR profile and spec limits."""
+    reg = load_projects()
+    keys = list(reg["projects"])
+    print("Project (platform the logs come from):")
+    for i, k in enumerate(keys, 1):
+        dflt = "  \u2190 default" if k == reg["default"] else ""
+        print(f"  {i}) {project_label(k, reg)}{dflt}")
+    raw = input(f"Select project [1-{len(keys)}, default: {reg['default']}]: ").strip()
+    key = reg["default"]
+    if raw.isdigit() and 1 <= int(raw) <= len(keys):
+        key = keys[int(raw) - 1]
+    elif raw:
+        match = [k for k in keys if raw.lower() in (k.lower(), project_label(k, reg).lower())]
+        key = match[0] if match else key
+    RUN_OPTIONS["project"] = key
+    if log_parsing:
+        print()
+        print("Experiment profile:")
+        print("  1) Non-Thermal (single boot)  \u2190 default")
+        print("  2) Thermal Experiment (DTR, BCRH / BHRC logs)  -> adds --dtr")
+        RUN_OPTIONS["dtr"] = (input("Select profile [1-2, default: 1]: ").strip() == "2")
+    if project_rmt_limits(key, reg):
+        print()
+        ans = input(f"Use the {key} spec RMT limits (per memory type + frequency) as "
+                    f"\u00b1Ref? (y/n) [default: y]: ").strip().lower()
+        RUN_OPTIONS["rmt_limits"] = ans not in ("n", "no")
+    print()
 
 
 def _resolve_python() -> str:
@@ -246,6 +318,7 @@ def run_pipeline(input_path, output_dir, stage=4, chart_fields=None, pattern="*.
     cmd = [
         PYTHON_EXE,
         PIPELINE_SCRIPT,
+        *_common_args(log_parsing=True),
         "--input", input_path,
         "--pattern", pattern,
         "--outdir", output_dir,
@@ -349,17 +422,28 @@ def interactive_menu():
     print("     Skip everything — assemble those PNGs into a PowerPoint file.")
     print("     Output: RMT_Summary_JMP_Charts.pptx")
     print()
+    print("  ─" * 30)
+    print("  8) \U0001F4D6 Open a guide in the browser (User Guide, Quick Start, CLI &")
+    print("     Automation, Installation, Pipeline Reference, Projects & Spec Limits)")
+    print()
 
-    stage_input = input("Enter stage number (1-7) [default: 4]: ").strip() or "4"
+    stage_input = input("Enter stage number (1-8) [default: 4]: ").strip() or "4"
 
     try:
         stage = int(stage_input)
-        if stage not in [1, 2, 3, 4, 5, 6, 7]:
+        if stage not in [1, 2, 3, 4, 5, 6, 7, 8]:
             print("❌ Invalid stage. Using stage 4.")
             stage = 4
     except ValueError:
         print("❌ Invalid input. Using stage 4.")
         stage = 4
+
+    if stage == 8:
+        _prompt_guide()
+        return ("__guide__",)
+
+    print()
+    _prompt_project_profile(log_parsing=stage <= 4)
 
     # --------------------------------------------------------- #
     # Stage 5: JMP charts from an existing CSV (no log parsing)  #
@@ -618,7 +702,8 @@ def simple_preset():
     print("\n" + "="*60)
     print(f"  {TOOL_NAME} {TOOL_VERSION} — RMT Log Pipeline Quick Start")
     print("="*60 + "\n")
-    
+
+    _prompt_project_profile(log_parsing=True)
     input_path = input("📁 Input folder/file path: ").strip()
     if not input_path:
         print("❌ Input path required.")
@@ -671,85 +756,57 @@ def simple_preset():
 
 
 def cli_quick_commands():
-    """Display quick copy-paste command examples."""
-    
-    print("\n" + "="*60)
-    print(f"  {TOOL_NAME} {TOOL_VERSION} — Quick Copy-Paste Commands")
-    print("="*60 + "\n")
-    
-    print("Stage 1: CSV Only")
-    print("─" * 60)
-    print(f'python "{PIPELINE_SCRIPT}" \\')
-    print('  --input "YOUR_INPUT_FOLDER" \\')
-    print('  --pattern "*.txt" \\')
-    print('  --outdir "YOUR_OUTPUT_FOLDER" \\')
-    print('  --no-ask-chart-approval "--chart-fields="')
-    print()
+    """Print copy-paste command-prompt (cmd.exe) commands for every stage.
 
-    print("Stage 2: CSV + Excel")
-    print("─" * 60)
-    print(f'python "{PIPELINE_SCRIPT}" \\')
-    print('  --input "YOUR_INPUT_FOLDER" \\')
-    print('  --pattern "*.txt" \\')
-    print('  --outdir "YOUR_OUTPUT_FOLDER" \\')
-    print('  --no-ask-chart-approval "--chart-fields="')
-    print()
-
-    print("Stage 3: CSV + Excel + JMP Charts")
-    print("─" * 60)
-    print(f'python "{PIPELINE_SCRIPT}" \\')
-    print('  --input "YOUR_INPUT_FOLDER" \\')
-    print('  --pattern "*.txt" \\')
-    print('  --outdir "YOUR_OUTPUT_FOLDER" \\')
-    print('  --no-ask-chart-approval \\')
-    print('  --chart-fields "RecEnDelay,TxDqsDelay,RxDqsDelay,TxDqDelay,RxDqVrefByte,TxVref,ClkGrpPi,CmdVref" \\')
-    print('  --generate-jmp-charts \\')
-    print(f'  --jmp-exe "{JMP_EXE}" \\')
-    print(f'  --jmp-axis-config "{AXIS_CONFIG}"')
-    print()
-
-    print("Stage 4: CSV + Excel + JMP Charts + PPT  (default)")
-    print("─" * 60)
-    print(f'python "{PIPELINE_SCRIPT}" \\')
-    print('  --input "YOUR_INPUT_FOLDER" \\')
-    print('  --pattern "*.txt" \\')
-    print('  --outdir "YOUR_OUTPUT_FOLDER" \\')
-    print('  --no-ask-chart-approval \\')
-    print('  --chart-fields "RecEnDelay,TxDqsDelay,RxDqsDelay,TxDqDelay,RxDqVrefByte,TxVref,ClkGrpPi,CmdVref" \\')
-    print('  --generate-jmp-charts \\')
-    print(f'  --jmp-exe "{JMP_EXE}" \\')
-    print(f'  --ppt-template "{PPT_TEMPLATE or "YOUR_TEMPLATE.pptx"}" \\')
-    print(f'  --jmp-axis-config "{AXIS_CONFIG}"')
-    print()
-
-    print("Stage 5: Excel + JMP Charts + PPT + HTML from existing CSV")
-    print("─" * 60)
-    print(f'python "{PIPELINE_SCRIPT}" \\')
-    print('  --jmp-from-csv "YOUR_CSV_FILE.csv" \\')
-    print('  --outdir "YOUR_OUTPUT_FOLDER" \\')
-    print('  --chart-fields "RecEnDelay,TxDqsDelay,RxDqsDelay,TxDqDelay,RxDqVrefByte,TxVref,ClkGrpPi,CmdVref" \\')
-    print(f'  --jmp-exe "{JMP_EXE}" \\')
-    print(f'  --ppt-template "{PPT_TEMPLATE or "YOUR_TEMPLATE.pptx"}" \\')
-    print(f'  --jmp-axis-config "{AXIS_CONFIG}"')
-    print()
-
-    print("Stage 6: JMP Charts + PPT + HTML from RMT_Extraction.xlsx")
-    print("─" * 60)
-    print(f'python "{PIPELINE_SCRIPT}" \\')
-    print('  --jmp-from-excel "YOUR_EXCEL_FILE.xlsx" \\')
-    print('  --outdir "YOUR_OUTPUT_FOLDER" \\')
-    print('  --chart-fields "RecEnDelay,TxDqsDelay,RxDqsDelay,TxDqDelay,RxDqVrefByte,TxVref,ClkGrpPi,CmdVref" \\')
-    print(f'  --jmp-exe "{JMP_EXE}" \\')
-    print(f'  --ppt-template "{PPT_TEMPLATE or "YOUR_TEMPLATE.pptx"}" \\')
-    print(f'  --jmp-axis-config "{AXIS_CONFIG}"')
-    print()
-
-    print("Stage 7: PPT from existing JMP charts folder")
-    print("─" * 60)
-    print(f'python "{PIPELINE_SCRIPT}" \\')
-    print('  --ppt-from-charts "YOUR_JMP_CHARTS_FOLDER" \\')
-    print('  --outdir "YOUR_OUTPUT_FOLDER" \\')
-    print(f'  --ppt-template "{PPT_TEMPLATE or "YOUR_TEMPLATE.pptx"}"')
+    Uses marginiq.cmd (repo .venv Python, UTF-8 output, exit code passed
+    through). Full automation guide: CLI_AUTOMATION.md.
+    """
+    mq = f'"{HERE / "marginiq.cmd"}"'
+    all_fields = ",".join(KNOWN_PARAMS)
+    common = "--no-ask-chart-approval --no-update-check"
+    jmp = f'--generate-jmp-charts --jmp-exe "{JMP_EXE}" --jmp-axis-config "{AXIS_CONFIG}"'
+    tmpl = f'--ppt-template "{PPT_TEMPLATE or "YOUR_TEMPLATE.pptx"}"'
+    blocks = [
+        ("Stage 1/2: CSV + Excel + HTML + native PPT (no JMP)  [NVL]",
+         [f'{mq} --project NVL --input "LOG_FOLDER" --pattern "*.log"',
+          f'  --outdir "OUT_FOLDER" {common} --chart-fields ""']),
+        ("Stage 4: + JMP charts + JMP PPT  [WCL, spec limits on]",
+         [f'{mq} --project WCL --input "LOG_FOLDER" --pattern "*.log"',
+          f'  --outdir "OUT_FOLDER" {common} --chart-fields "{all_fields}"',
+          f'  {jmp} {tmpl}']),
+        ("Thermal DTR (BCRH / BHRC logs)  [WCL or NVL]",
+         [f'{mq} --project WCL --dtr --input "DTR_FOLDER" --pattern "*.log"',
+          f'  --outdir "OUT_FOLDER" {common} {jmp}']),
+        ("Stage 5: JMP + PPT + HTML from an existing Extended CSV",
+         [f'{mq} --project WCL --jmp-from-csv "OUT_FOLDER\\RMT_Combined_Extended.csv"',
+          f'  --outdir "OUT_FOLDER" --no-update-check --chart-fields "{all_fields}"',
+          f'  --jmp-exe "{JMP_EXE}" --jmp-axis-config "{AXIS_CONFIG}"']),
+        ("Stage 6: JMP + PPT + HTML from RMT_Extraction.xlsx",
+         [f'{mq} --project WCL --jmp-from-excel "OUT_FOLDER\\RMT_Extraction.xlsx"',
+          f'  --outdir "OUT_FOLDER" --no-update-check --jmp-exe "{JMP_EXE}"']),
+        ("Stage 7: PPT from an existing jmp_charts folder",
+         [f'{mq} --ppt-from-charts "OUT_FOLDER\\jmp_charts" --outdir "OUT_FOLDER" {tmpl}']),
+        ("Options",
+         ["  --no-rmt-limits      use the axis-config +/-Ref instead of the WCL spec limits",
+          "  --jmp-jsl-only       write rmt_jmp_charts.jsl without launching JMP",
+          "  echo %ERRORLEVEL%    0 ok | 1 no input files | 2 bad args / no RMT data |",
+          "                       3 approval denied | 4 --jmp-exe missing | 5 JMP failed",
+          f"  {mq} --guide [readme|quickstart|cli|install|pipeline|projects]",
+          "                       open a guide / the spec-limits page in the browser"]),
+    ]
+    print("\n" + "=" * 60)
+    print(f"  {TOOL_NAME} {TOOL_VERSION} \u2014 command-prompt (cmd.exe) commands")
+    print("  Each command is ONE line; it is wrapped with ^ here for readability.")
+    print("=" * 60 + "\n")
+    for title, lines in blocks:
+        print(title)
+        print("\u2500" * 60)
+        if title == "Options":
+            print("\n".join(lines))
+        else:
+            print(" ^\n".join(lines))
+        print()
+    print("Full guide: " + str(HERE / "CLI_AUTOMATION.md"))
     print()
 
 
@@ -766,6 +823,7 @@ def run_jmp_from_csv(csv_path, output_dir: str, chart_fields: str) -> int:
         csv_list = [str(csv_path)]
     cmd = [
         PYTHON_EXE, PIPELINE_SCRIPT,
+        *_common_args(log_parsing=False),
         "--jmp-from-csv", *csv_list,
         "--outdir", output_dir,
         "--chart-fields", chart_fields,
@@ -798,6 +856,7 @@ def run_jmp_from_excel(excel_path: str, output_dir: str, chart_fields: str) -> i
     """Run JMP chart + PPT + HTML generation from an existing Excel (.xlsx) file."""
     cmd = [
         PYTHON_EXE, PIPELINE_SCRIPT,
+        *_common_args(log_parsing=False),
         "--jmp-from-excel", excel_path,
         "--outdir", output_dir,
         "--chart-fields", chart_fields,
@@ -824,6 +883,7 @@ def run_ppt_from_charts(charts_dir: str, output_dir: str) -> int:
     """Assemble a PPT from an existing jmp_charts folder."""
     cmd = [
         PYTHON_EXE, PIPELINE_SCRIPT,
+        *_common_args(log_parsing=False),
         "--ppt-from-charts", charts_dir,
         "--outdir", output_dir,
     ]
@@ -855,7 +915,16 @@ def main():
             print("  python rmt_pipeline_runner.py           Interactive menu")
             print("  python rmt_pipeline_runner.py --quick   Minimal-prompt quick-start")
             print("  python rmt_pipeline_runner.py --cmds    Print copy-paste CLI commands")
+            print("  python rmt_pipeline_runner.py --guide [readme|quickstart|cli|install|pipeline|projects]")
+            print("                                          Open a guide in the browser (menu option 8)")
             print("  python rmt_pipeline_runner.py --help    Show this help")
+            print()
+            print("  The menus ask for the Project (projects.json: NVL, WCL, ...), the")
+            print("  Experiment profile (Non-Thermal / Thermal DTR -> --dtr) and, for")
+            print("  projects with spec limits (WCL), whether to use them as \u00b1Ref.")
+            print()
+            print("  Non-interactive / automation: use marginiq.cmd (same flags as")
+            print("  rmt_log_pipeline.py) - see CLI_AUTOMATION.md.")
             print()
             print("Workflow Stages")
             print("-" * 60)
@@ -931,6 +1000,9 @@ def main():
         elif sys.argv[1] == "--cmds":
             cli_quick_commands()
             return
+        elif sys.argv[1] == "--guide":
+            open_guide(sys.argv[2] if len(sys.argv) > 2 else "readme")
+            return
         else:
             print("❌ Unknown option. Use --help for usage.")
             return
@@ -939,6 +1011,8 @@ def main():
     
     if result:
         # Stages 5-7 return a short tuple with a sentinel string as first element
+        if isinstance(result, tuple) and result[0] == "__guide__":
+            return
         if isinstance(result, tuple) and result[0] == "__jmp_from_csv__":
             _, csv_path, output_dir, chart_fields = result
             run_jmp_from_csv(csv_path, output_dir, chart_fields)

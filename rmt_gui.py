@@ -54,7 +54,13 @@ from rmt_project import (
     load_projects,
     project_label,
     project_param_aliases,
+    project_dtr_rules,
+    project_platform_variants,
+    project_require_rmt_task,
+    project_rmt_fallback_markers,
+    project_rmt_limits,
 )
+import rmt_help
 import rmt_update
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -395,6 +401,7 @@ class RmtGuiApp:
         self._run_ok = True
         self._tabs_unlocked = False
         self._analysis_done = False   # a full pipeline run finished -> offer "Analyze Another Log"
+        self._input_locked = False    # Tab 1 greyed out after Run Pipeline (until Analyze Another Log)
         self._stage1_csv: str | None = None
         self.var_csvinfo = tk.StringVar(value=CSVINFO_LOCKED)
 
@@ -415,6 +422,12 @@ class RmtGuiApp:
         self.var_use_tmpl  = tk.BooleanVar(value=False)   # set properly after widget build
         self.var_multimode = tk.StringVar(value="concat")  # concat | separate
         self.var_useaxis  = tk.BooleanVar(value=True)
+        self.var_rmtlimits = tk.BooleanVar(value=True)   # project spec limits as ±Ref (WCL)
+        self._last_recalc_spec = False
+        # (param, side) -> (spec value shown in the ±Ref grid, user's own value).
+        # Spec limits are display-only: they are never written to the axis JSON
+        # and are reverted when the project / limits option changes.
+        self._spec_refs: dict[tuple[str, str], tuple[str, str]] = {}
         self.var_axispath = tk.StringVar(value=AXIS_CONFIG)
 
         # Per-file axis support (separate mode, multiple files): each file
@@ -512,10 +525,26 @@ class RmtGuiApp:
         m_file.add_command(label="Exit", command=self.root.destroy)
         mb.add_cascade(label="File", menu=m_file)
         m_help = tk.Menu(mb, tearoff=False)
-        m_help.add_command(label="User Guide (README)",
-                           command=lambda: self._open_path(HERE / "README.md"))
+        m_help.add_command(label="User Guide", accelerator="F1",
+                           command=lambda: self._open_help("readme"))
+        m_help.add_command(label="Quick Start", command=lambda: self._open_help("quickstart"))
+        m_help.add_command(label="Command Line & Automation",
+                           command=lambda: self._open_help("cli"))
+        m_help.add_command(label="Installation Guide", command=lambda: self._open_help("install"))
+        m_help.add_command(label="Pipeline Reference", command=lambda: self._open_help("pipeline"))
+        m_help.add_separator()
+        m_help.add_command(label="What's New",
+                           command=lambda: self._open_help("readme", rmt_help.ANCHOR_WHATS_NEW))
+        m_help.add_command(label="Supported Projects & Spec Limits",
+                           command=lambda: self._open_help("projects"))
+        m_help.add_command(label="Troubleshooting & FAQ",
+                           command=lambda: self._open_help("readme", rmt_help.ANCHOR_FAQ))
+        m_help.add_separator()
         m_help.add_command(label="Open Debug Log Folder",
                            command=lambda: self._open_path(LOG_DIR))
+        m_help.add_command(label="Copy Diagnostics for Support",
+                           command=self._copy_diagnostics)
+        m_help.add_command(label="Open Tool Folder", command=lambda: self._open_path(HERE))
         m_help.add_separator()
         m_help.add_command(label="Check for Updates\u2026",
                            command=lambda: self._start_update_check(force=True))
@@ -523,6 +552,68 @@ class RmtGuiApp:
         mb.add_cascade(label="Help", menu=m_help)
         self.root.configure(menu=mb)
         self.root.bind_all("<Control-n>", lambda _e: self._new_analysis())
+        self.root.bind_all("<F1>", lambda _e: self._open_help("readme"))
+
+    def _open_help(self, page: str, anchor: str | None = None) -> None:
+        """Open a guide in the browser via the built-in Markdown viewer
+        (rmt_help); falls back to the raw .md file if rendering fails."""
+        self.status.set("Opening help\u2026")
+        try:
+            path = rmt_help.open_help(page, anchor)
+            self.status.set(f"Help opened in your browser: {path.name}")
+        except Exception as exc:  # rendering must never break the GUI
+            LOG.exception("Help viewer failed")
+            md = HERE / rmt_help.DOCS.get(page, rmt_help.DOCS["readme"])[0]
+            self.status.set(f"Help viewer failed ({exc}); opening {md.name}.")
+            self._open_path(md)
+
+    def _diagnostics_text(self) -> str:
+        """Support summary: versions, git state, settings, paths and last command."""
+        def _git(*args: str) -> str:
+            try:
+                r = subprocess.run(["git", "-C", str(HERE), *args], capture_output=True,
+                                   text=True, timeout=5)
+                return r.stdout.strip() if r.returncode == 0 else f"n/a (git exit {r.returncode})"
+            except (OSError, subprocess.SubprocessError) as exc:
+                return f"n/a ({exc.__class__.__name__})"
+        import platform
+        jmp = self.var_jmp.get().strip()
+        try:
+            cmd = self.txt_cmd.get("1.0", "end").strip()
+        except tk.TclError:
+            cmd = ""
+        porcelain = _git("status", "--porcelain")
+        dirty = "unknown" if porcelain.startswith("n/a") else ("yes" if porcelain else "no")
+        lines = [
+            f"{TOOL_NAME} {TOOL_VERSION} - {TOOL_SUBTITLE}",
+            f"Git: {_git('rev-parse', '--abbrev-ref', 'HEAD')} @ {_git('rev-parse', '--short', 'HEAD')}"
+            f" (local changes: {dirty})",
+            f"Python: {sys.version.split()[0]} ({sys.executable})",
+            f"Windows: {platform.platform()}",
+            f"Project: {self.var_project.get()} | Profile: {self.var_profile.get()}",
+            f"Source: {self.var_source.get()} | Stage: {self.var_stage.get()}"
+            f" | Spec limits as \u00b1Ref: {'on' if self.var_rmtlimits.get() else 'off'}",
+            f"JMP: {jmp or '(not set)'} ({'found' if jmp and Path(jmp).exists() else 'NOT found'})",
+            f"Output folder: {self.var_outdir.get().strip() or '(not set)'}",
+            f"Axis config: {self.var_axispath.get().strip()}",
+            f"Tool folder: {HERE}",
+            f"Debug log: {LOG_FILE}",
+            "",
+            "Last command preview:",
+            cmd or "(empty)",
+        ]
+        return "\n".join(lines)
+
+    def _copy_diagnostics(self) -> None:
+        text = self._diagnostics_text()
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status.set("Diagnostics copied to the clipboard.")
+        messagebox.showinfo(
+            "Copy Diagnostics for Support",
+            "Diagnostics copied to the clipboard. Paste them into your e-mail / Teams message "
+            "and attach the debug log (Help \u25b8 Open Debug Log Folder) and the output "
+            "folder's rmt_metadata.json.\n\n" + text[:900])
 
     def _open_path(self, path: Path) -> None:
         if not path.exists():
@@ -726,8 +817,16 @@ class RmtGuiApp:
 
     def _prev_tab(self) -> None:
         i = self.nb.index(self.nb.select())
-        if i > 0:
+        if i > 0 and not (i == 1 and self._input_locked):
             self.nb.select(i - 1)
+
+    def _set_input_tab_locked(self, locked: bool) -> None:
+        """Grey out Tab 1 once Run Pipeline starts, so a new parse can only be
+        started through 'Analyze Another Log' (which resets the session)."""
+        self._input_locked = locked
+        self.nb.tab(0, state="disabled" if locked else "normal")
+        if self.nb.select():
+            self._update_nav()
 
     def _advance_from_input(self) -> None:
         """Tab 1 'Next': for boot-logs run Stage 1 to make the CSV, then unlock
@@ -741,6 +840,8 @@ class RmtGuiApp:
                 return
             csvs = [p for p in self._all_paths() if Path(p).suffix.lower() == ".csv"]
             self._unlock_tabs(csvs)
+            if csvs:
+                self._recalculate_axis(silent=True)
             self.nb.select(self.tab_axis)
             return
         # Boot-log source → generate Stage 1 CSV, unlock on completion.
@@ -775,7 +876,8 @@ class RmtGuiApp:
         i = self.nb.index(self.nb.select())
         n = self._tab_count()
         self.lbl_step.configure(text=f"Step {i + 1} of {n}")
-        self.btn_prev.configure(state="normal" if i > 0 else "disabled")
+        prev_ok = i > 0 and not (i == 1 and self._input_locked)
+        self.btn_prev.configure(state="normal" if prev_ok else "disabled")
         if i == 0 and not self._tabs_unlocked:
             # Tab 1 acts as Stage 1: generate the CSV, then unlock the rest.
             self.btn_next.configure(text="Generate CSV & Continue \u2192",
@@ -1028,6 +1130,15 @@ class RmtGuiApp:
         ttk.Checkbutton(g_axis, text="Apply axis settings (--jmp-axis-config)",
                         variable=self.var_useaxis, command=self._refresh_preview).pack(
             anchor="w", padx=8, pady=(6, 2))
+        _lim_cb = ttk.Checkbutton(g_axis, text="Spec RMT limits as \u00b1Ref (per frequency)",
+                                  variable=self.var_rmtlimits, command=self._on_rmtlimits_toggle)
+        _lim_cb.pack(anchor="w", padx=8, pady=(0, 2))
+        _Tooltip(_lim_cb,
+                 "Projects with spec limits in projects.json (WCL: DDR5 / LPDDR5 RMT limits\n"
+                 "per frequency) use them as the \u00b1Ref lines in JMP / HTML / PPT and add a\n"
+                 "spec PASS/FAIL table. The limit is picked from the memory type and frequency\n"
+                 "read from each log. Recalculate fills \u00b1Ref with these limits.\n"
+                 "Untick to use your own \u00b1Ref (adds --no-rmt-limits). No effect for NVL.")
         rc_row = ttk.Frame(g_axis, style="Card.TFrame"); rc_row.pack(fill="x", padx=8, pady=(0, 8))
         self.btn_recalc = ttk.Button(rc_row, text="\u21BB Recalculate from data",
                                       style="Accent.TButton", state="disabled",
@@ -1460,7 +1571,46 @@ class RmtGuiApp:
     def _on_project_change(self, event=None) -> None:
         if hasattr(self, "lbl_hdr_project"):
             self.lbl_hdr_project.configure(text=self.var_project.get())
-        self.status.set(f"Project set to {self.var_project.get()}.")
+        restored = self._restore_user_refs()
+        self.status.set(f"Project set to {self.var_project.get()}."
+                        + (" \u00b1Ref restored from your axis settings." if restored else ""))
+        self._refresh_preview()
+
+    # ── spec-limit ±Ref (display only) ──────────────────────────────────
+    def _set_spec_ref(self, param: str, side: str, value: str) -> None:
+        """Show a spec limit as ±Ref, remembering the user's own value."""
+        key = (param, side, "ref_line")
+        cur = self.axis_vars[key].get()
+        prev = self._spec_refs.get((param, side))
+        user = prev[1] if prev and cur == prev[0] else cur
+        self.axis_vars[key].set(value)
+        self._spec_refs[(param, side)] = (value, user)
+
+    def _user_ref_str(self, param: str, side: str) -> str:
+        """The user's own ±Ref for *param* (the grid value unless it is a spec limit)."""
+        cur = self.axis_vars[(param, side, "ref_line")].get()
+        tracked = self._spec_refs.get((param, side))
+        return tracked[1] if tracked and cur == tracked[0] else cur
+
+    def _restore_user_refs(self) -> int:
+        """Put the user's own ±Ref back where a spec limit is shown; returns the count."""
+        n = 0
+        for (param, side), (spec_val, user_val) in self._spec_refs.items():
+            key = (param, side, "ref_line")
+            if self.axis_vars[key].get() == spec_val:
+                self.axis_vars[key].set(user_val)
+                n += 1
+        self._spec_refs.clear()
+        if n:
+            self.root.after(50, self._redraw_all_axis_previews)
+        return n
+
+    def _on_rmtlimits_toggle(self) -> None:
+        if not self.var_rmtlimits.get():
+            if self._restore_user_refs():
+                self.status.set("Spec RMT limits off \u2014 \u00b1Ref restored from your axis settings.")
+        elif self._tabs_unlocked:
+            self._recalculate_axis(silent=True)
         self._refresh_preview()
 
     # ── source toggle ──────────────────────────────────────────────────
@@ -1583,7 +1733,7 @@ class RmtGuiApp:
         # Make sure the currently-displayed grid is captured first (mirrors
         # the same "capture live edits" snapshot build_commands() performs).
         if self._axis_last_file:
-            snap = self._axis_to_dict()
+            snap = self._axis_to_dict(user_refs=True)
             snap["_chart_enabled"] = self._param_enabled_snapshot()
             self.per_file_axis[self._axis_last_file] = snap
 
@@ -1697,7 +1847,13 @@ class RmtGuiApp:
                 "parameters": {},
             }
 
-    def _axis_to_dict(self) -> dict:
+    def _axis_to_dict(self, user_refs: bool = False) -> dict:
+        """Axis grid as the axis-JSON dict.
+
+        ``user_refs=True`` (anything written to disk) replaces spec-limit ±Ref
+        shown in the grid with the user's own value, so project-specific spec
+        limits (WCL) never leak into jmp_axis_settings.json / other projects.
+        """
         def _n(s, default=None):
             s = (s or "").strip()
             if s == "":
@@ -1726,7 +1882,9 @@ class RmtGuiApp:
             for side in ("plus", "minus"):
                 sc = {}
                 for f in ("min", "max", "inc", "ref_line"):
-                    val = _n(self.axis_vars[(p, side, f)].get())
+                    raw = (self._user_ref_str(p, side) if user_refs and f == "ref_line"
+                           else self.axis_vars[(p, side, f)].get())
+                    val = _n(raw)
                     if val is not None:
                         sc[f] = val
                 if sc:
@@ -1742,7 +1900,7 @@ class RmtGuiApp:
         if not p:
             return
         try:
-            Path(p).write_text(json.dumps(self._axis_to_dict(), indent=2), encoding="utf-8")
+            Path(p).write_text(json.dumps(self._axis_to_dict(user_refs=True), indent=2), encoding="utf-8")
             self.var_axispath.set(p)
             self.status.set(f"Saved axis settings to {Path(p).name}")
             self._refresh_preview()
@@ -1757,6 +1915,7 @@ class RmtGuiApp:
         pre-filled from that file, matching 'Reset' == 'reload defaults'."""
         for v in self.axis_vars.values():
             v.set("")
+        self._spec_refs.clear()
         self.def_vars["inc"].set("5"); self.def_vars["minor_ticks"].set("0")
         self.def_vars["major_grid"].set("1"); self.def_vars["minor_grid"].set("1")
         self.def_vars["plus_color"].set("Medium Light Red")
@@ -1933,9 +2092,12 @@ class RmtGuiApp:
 
         self._reset_params()          # charted params + axis grid + Defaults from JSON
         self.txt_log.delete("1.0", "end")
+        # Re-enable and select Tab 1 BEFORE locking Tabs 2-3, so a tab is
+        # always selectable (all-disabled leaves the notebook without a tab).
+        self._set_input_tab_locked(False)
+        self.nb.select(self.tab_input)
         for i in (1, 2):
             self.nb.tab(i, state="disabled")
-        self.nb.select(self.tab_input)
         self._on_profile_change()     # also re-applies source hints / stage state
         self._after_files_changed()
         self._update_nav()
@@ -2188,7 +2350,7 @@ class RmtGuiApp:
         new_key = self.var_axis_file.get()
         new_file = self._axis_file_map.get(new_key)
         if self._axis_last_file:
-            snap = self._axis_to_dict()
+            snap = self._axis_to_dict(user_refs=True)
             snap["_chart_enabled"] = self._param_enabled_snapshot()
             self.per_file_axis[self._axis_last_file] = snap
         if new_file:
@@ -2212,6 +2374,13 @@ class RmtGuiApp:
                     return list(_csv.DictReader(fh))
             pipeline = importlib.import_module("rmt_log_pipeline")
             pipeline.set_param_aliases(project_param_aliases(self._project_key(), PROJECT_REGISTRY))
+            pipeline.set_rmt_fallback_markers(
+                project_rmt_fallback_markers(self._project_key(), PROJECT_REGISTRY))
+            pipeline.set_project_rules(
+                project_dtr_rules(self._project_key(), PROJECT_REGISTRY),
+                project_platform_variants(self._project_key(), PROJECT_REGISTRY),
+                project_require_rmt_task(self._project_key(), PROJECT_REGISTRY),
+                project_rmt_limits(self._project_key(), PROJECT_REGISTRY))
             text = pipeline.read_text_file(p)
             if self._profile_is_thermal():
                 return pipeline.parse_dtr_rmt_from_text(text, p.name)
@@ -2222,7 +2391,45 @@ class RmtGuiApp:
     # ──────────────────────────────────────────────────────────────────
     # Re-calculate axis ranges from loaded data
     # ──────────────────────────────────────────────────────────────────
-    def _recalculate_axis(self) -> None:
+    def _spec_limits_for(self, rows: list[dict], files: list[str]) -> dict[str, list[float]] | None:
+        """Project spec limits {param: [L, H]} for *rows* (WCL), or None.
+
+        The memory family per log comes from the metadata sidecar next to a
+        Stage-1 CSV (or the output folder), or is parsed from a raw log.
+        """
+        if not self.var_rmtlimits.get() or not rows:
+            return None
+        import importlib
+        try:
+            pipeline = importlib.import_module("rmt_log_pipeline")
+            key = self._project_key()
+            limits = project_rmt_limits(key, PROJECT_REGISTRY)
+            if not limits:
+                return None
+            pipeline.set_project_rules(project_dtr_rules(key, PROJECT_REGISTRY),
+                                       project_platform_variants(key, PROJECT_REGISTRY),
+                                       project_require_rmt_task(key, PROJECT_REGISTRY),
+                                       limits)
+            pinfos: list[dict] = []
+            metas = {Path(f).parent / "rmt_metadata.json" for f in files
+                     if Path(f).suffix.lower() == ".csv"}
+            outd = self.var_outdir.get().strip()
+            if outd:
+                metas.add(Path(outd) / "rmt_metadata.json")
+            for mp in metas:
+                if mp.is_file():
+                    pinfos += json.loads(mp.read_text(encoding="utf-8")).get("platform_infos") or []
+            for f in files:
+                p = Path(f)
+                if p.suffix.lower() in (".log", ".txt") and p.is_file():
+                    pinfos.append(pipeline.parse_platform_info(pipeline.read_text_file(p), p.name))
+            info = pipeline.resolve_rmt_limits(rows, pinfos)
+            return info["chart"] if info else None
+        except Exception as exc:  # limits are an aid; never block Recalculate
+            LOG.warning("Spec limits lookup failed: %s", exc)
+            return None
+
+    def _recalculate_axis(self, silent: bool = False) -> None:
         """Derive Min / Max / Inc from the loaded data files.
         Ref-line values (+Ref / -Ref) are intentionally preserved.
 
@@ -2230,14 +2437,29 @@ class RmtGuiApp:
         each file's Min/Max/Inc is computed from ITS OWN data only (not the
         combined set) and stored per-file — switch between them with the
         "Per-file axis values for:" dropdown above the parameter grid.
+
+        ``silent=True`` (automatic run after Stage 1 / CSV load) reports via
+        the status bar and debug log instead of message boxes.
         """
         import importlib
+
+        # Spec limits shown from a previous recalculation / project are
+        # display-only: put the user's ±Ref back before computing again.
+        self._restore_user_refs()
+
+        def _notify(kind: str, title: str, msg: str) -> None:
+            if silent:
+                LOG.info("Recalculate (%s): %s", title, msg.replace("\n", " "))
+                if kind != "showinfo":
+                    self.status.set(f"{title}: {msg.splitlines()[0]}")
+            else:
+                getattr(messagebox, kind)(title, msg)
 
         try:
             pipeline = importlib.import_module("rmt_log_pipeline")
             _car = pipeline._compute_axis_range
         except Exception:
-            messagebox.showerror("Re-calculate",
+            _notify("showerror", "Re-calculate",
                                  "Could not import rmt_log_pipeline.\n"
                                  "Ensure it is in the same folder.")
             return
@@ -2246,7 +2468,7 @@ class RmtGuiApp:
             files = [f for f in self._all_paths()
                      if Path(f).suffix.lower() in (".csv", ".log", ".txt") and Path(f).is_file()]
             if not files:
-                messagebox.showinfo(
+                _notify("showinfo",
                     "Re-calculate",
                     "No CSV / .log / .txt files found in the file list.")
                 return
@@ -2259,14 +2481,21 @@ class RmtGuiApp:
                 row_counts[f] = len(rows)
                 if not rows:
                     continue
+                spec = self._spec_limits_for(rows, [f]) or {}
+                self._last_recalc_spec = self._last_recalc_spec or bool(spec)
                 params_dict: dict = {}
                 for p in KNOWN_PARAMS:
+                    lim = spec.get(p)
                     try:
-                        pl_min, pl_max, mi_min, mi_max, inc = _car(rows, p)
+                        if lim:
+                            pl_min, pl_max, mi_min, mi_max, inc = _car(
+                                rows, p, ref_mag=max(lim), ref_mag_lo=min(lim))
+                        else:
+                            pl_min, pl_max, mi_min, mi_max, inc = _car(rows, p)
                     except Exception:
                         continue
-                    ref_p = self.axis_vars[(p, "plus", "ref_line")].get()
-                    ref_m = self.axis_vars[(p, "minus", "ref_line")].get()
+                    ref_p = self._user_ref_str(p, "plus")
+                    ref_m = self._user_ref_str(p, "minus")
                     entry = {
                         "plus":  {"min": pl_min, "max": pl_max, "inc": float(inc)},
                         "minus": {"min": mi_min, "max": mi_max, "inc": float(inc)},
@@ -2302,7 +2531,7 @@ class RmtGuiApp:
                 f"+Ref / \u2212Ref preserved. Files list unchanged.")
             details = "\n".join(
                 f"  {Path(f).name}: {row_counts.get(f, 0)} row(s)" for f in files)
-            messagebox.showinfo(
+            _notify("showinfo",
                 "Re-calculate complete (per file)",
                 "Computed unique Min/Max/Inc per file:\n\n" + details + "\n\n"
                 "Each file also has its own independent Defaults section "
@@ -2337,7 +2566,7 @@ class RmtGuiApp:
                         csv_files.append(fp); break
 
         if not csv_files and not log_files:
-            messagebox.showinfo(
+            _notify("showinfo",
                 "Re-calculate",
                 "No CSV / .log / .txt data found.\n\n"
                 "Load CSV files on Tab 1 (Data Source → Existing CSV),\n"
@@ -2352,24 +2581,30 @@ class RmtGuiApp:
                 with fp.open(encoding="utf-8", errors="replace", newline="") as fh:
                     rows.extend(list(_csv.DictReader(fh)))
             except Exception as e:
-                messagebox.showerror("Re-calculate", f"Could not read {fp.name}:\n{e}")
+                _notify("showerror", "Re-calculate", f"Could not read {fp.name}:\n{e}")
                 return
         for fp in log_files:
             rows.extend(self._rows_for_file(str(fp)))
 
         source_files = csv_files + log_files
         if not rows:
-            messagebox.showinfo("Re-calculate", "No RMT rows found in the selected file(s).")
+            _notify("showinfo", "Re-calculate", "No RMT rows found in the selected file(s).")
             return
 
         updated = 0
+        spec = self._spec_limits_for(rows, [str(f) for f in source_files]) or {}
         for p in KNOWN_PARAMS:
+            lim = spec.get(p)
             try:
-                pl_min, pl_max, mi_min, mi_max, inc = _car(rows, p)
+                if lim:
+                    pl_min, pl_max, mi_min, mi_max, inc = _car(
+                        rows, p, ref_mag=max(lim), ref_mag_lo=min(lim))
+                else:
+                    pl_min, pl_max, mi_min, mi_max, inc = _car(rows, p)
             except Exception:
                 continue
 
-            # Only update min/max/inc — preserve ref_line
+            # Only update min/max/inc — preserve ref_line (spec limits replace it)
             for side, field, val in [
                 ("plus",  "min", pl_min), ("plus",  "max", pl_max),
                 ("minus", "min", mi_min), ("minus", "max", mi_max),
@@ -2377,18 +2612,26 @@ class RmtGuiApp:
             ]:
                 if (p, side, field) in self.axis_vars:
                     self.axis_vars[(p, side, field)].set(_fmt(val))
+            if lim:
+                self._set_spec_ref(p, "plus", _fmt(lim[1]))
+                self._set_spec_ref(p, "minus", _fmt(-lim[0]))
             updated += 1
 
         self._redraw_all_axis_previews()
+        self._last_recalc_spec = bool(spec)
+        _ref_txt = ("\u00b1Ref set to the spec RMT limits for this frequency"
+                    if spec else "+Ref / \u2212Ref preserved")
         self.status.set(
             f"Re-calculated axis ranges for {updated} parameters from "
-            f"{len(source_files)} file(s).  +Ref / \u2212Ref preserved.")
-        messagebox.showinfo(
+            f"{len(source_files)} file(s).  {_ref_txt}.")
+        _notify("showinfo",
             "Re-calculate complete",
             f"Updated Min / Max / Inc for {updated} parameters.\n"
             f"Source: {', '.join(f.name for f in source_files[:3])}"
             + (" \u2026" if len(source_files) > 3 else "") +
-            "\n\n+ Ref and \u2212 Ref values were not changed.")
+            ("\n\n\u00b1Ref set to the spec RMT limits for the memory type and "
+             "frequency read from the log." if spec else
+             "\n\n+ Ref and \u2212 Ref values were not changed."))
 
     def _load_jrp(self) -> None:
         p = filedialog.askopenfilename(title="Load reference .jrp",
@@ -2430,7 +2673,7 @@ class RmtGuiApp:
         """Persist current axis grid to the configured JSON path; return it."""
         try:
             path = Path(self.var_axispath.get().strip() or AXIS_CONFIG)
-            path.write_text(json.dumps(self._axis_to_dict(), indent=2), encoding="utf-8")
+            path.write_text(json.dumps(self._axis_to_dict(user_refs=True), indent=2), encoding="utf-8")
             return str(path)
         except Exception:
             return None
@@ -2479,8 +2722,11 @@ class RmtGuiApp:
 
         def _axis():
             if self.var_useaxis.get() and axis_path:
-                return ["--jmp-axis-config", axis_path]
-            return []
+                return ["--jmp-axis-config", axis_path] + _limits()
+            return _limits()
+
+        def _limits():
+            return [] if self.var_rmtlimits.get() else ["--no-rmt-limits"]
 
         if src == SRC_PPT:
             charts = files[0] if files else ""
@@ -2529,7 +2775,7 @@ class RmtGuiApp:
         cmd += [] if self.var_approval.get() else ["--no-ask-chart-approval"]
         stage = self.var_stage.get()
         if stage in (1, 2):
-            cmd += ["--chart-fields", ""]
+            cmd += ["--chart-fields", ""] + _limits()
         else:
             cmd += ["--chart-fields", fields, "--generate-jmp-charts",
                     "--jmp-exe", self.var_jmp.get().strip()]
@@ -2593,7 +2839,7 @@ class RmtGuiApp:
         # checkboxes) to the currently-displayed file's grid before
         # resolving per-file axis paths / chart fields below.
         if self._axis_last_file:
-            snap = self._axis_to_dict()
+            snap = self._axis_to_dict(user_refs=True)
             snap["_chart_enabled"] = self._param_enabled_snapshot()
             self.per_file_axis[self._axis_last_file] = snap
 
@@ -2714,6 +2960,7 @@ class RmtGuiApp:
         self.btn_stop.configure(state="normal")
         self.status.set(f"Running pipeline ({len(commands)} command(s))\u2026")
         self.nb.select(self.tab_run)
+        self._set_input_tab_locked(True)
         threading.Thread(target=self._worker, args=(commands,), daemon=True).start()
 
     def _run_stage(self, n: int) -> None:
@@ -2826,8 +3073,14 @@ class RmtGuiApp:
                         self.lst.insert("end", c)
                     self._update_recalc_state()
                 self._unlock_tabs(csvs)
-                self.status.set("Stage 1 complete \u2014 CSV ready. "
-                                "Re-calculate axis on JMP Axis Settings, then Run.")
+                # Fit the JMP axis to THIS log's data (the grid otherwise keeps
+                # the saved / previous log's ranges and clips the charts).
+                self._last_recalc_spec = False
+                self._recalculate_axis(silent=True)
+                _ref_note = ("\u00b1Ref = spec RMT limits for this log's memory/frequency"
+                             if self._last_recalc_spec else "\u00b1Ref kept")
+                self.status.set("Stage 1 complete \u2014 CSV ready. Axis Min/Max/Inc "
+                                f"recalculated from this data ({_ref_note}); review, then Run.")
                 self.nb.select(self.tab_axis)
                 self.root.after(150, self._redraw_all_axis_previews)
         else:
@@ -2837,6 +3090,9 @@ class RmtGuiApp:
                                 "Click '\u21BA Analyze Another Log' to start a new analysis.")
                 self._update_nav()
             else:
+                if self._active_stage is None and self._input_locked:
+                    # Failed / stopped run: allow fixing Tab 1 inputs (e.g. JMP path).
+                    self._set_input_tab_locked(False)
                 self.status.set("Done." if self._run_ok else "Stopped / failed.")
         self._active_stage = None
 

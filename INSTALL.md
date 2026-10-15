@@ -201,11 +201,13 @@ It locates Python, creates `.venv`, installs the pinned packages, detects JMP an
 ```powershell
 .venv\Scripts\python.exe -c "import openpyxl, pptx, tkinter; print('Python packages OK')"
 .venv\Scripts\python.exe rmt_log_pipeline.py --version
+.\marginiq.cmd --version                               # command-prompt entry point (any folder)
 Test-Path "C:\Program Files\SAS\JMPPRO\17\jmp.exe"     # True on a JMP Pro machine
 ```
 
 Then launch the GUI from the **MarginIQ** desktop icon and continue with the
-[Quick Start Guide](RMT_QUICKSTART.md).
+[Quick Start Guide](RMT_QUICKSTART.md). To drive MarginIQ from scripts or other automation
+tools, see [CLI_AUTOMATION.md](CLI_AUTOMATION.md).
 
 ---
 

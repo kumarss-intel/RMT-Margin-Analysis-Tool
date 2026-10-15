@@ -16,18 +16,18 @@ You can drive it in three ways:
 |------|----------|-------------|
 | 🖥️ **GUI** | Day-to-day lab analysis, axis tuning, JMP Graph Builder | **MarginIQ** desktop icon / `Launch_RMT_GUI.bat` |
 | 🤖 **Agentic** (GitHub Copilot) | "Plot these logs for me" from chat, no clicks | Copilot Chat in **Agent** mode ([details](#-agentic-mode-github-copilot)) |
-| ⌨️ **CLI** | Scripts, batch jobs, CI | `.venv\Scripts\python.exe rmt_log_pipeline.py` |
+| ⌨️ **CLI** | Scripts, batch jobs, CI, other automation tools | `marginiq.cmd` (or `.venv\Scripts\python.exe rmt_log_pipeline.py`) — see [CLI_AUTOMATION.md](CLI_AUTOMATION.md) |
 
 ---
 
 ## 📑 Contents
 
-1. [What's new in 2.0](#-whats-new-in-20)
+1. [What's new in 2.0](#-whats-new-in-20) — incl. [Wildcat Lake support & automation](#wildcat-lake-wcl-support--automation)
 2. [Quick start](#-quick-start)
 3. [Installation & setup](#-installation--setup) — incl. [desktop / taskbar shortcuts](#desktop-taskbar-and-start-menu-shortcuts), [staying up to date](#staying-up-to-date) and the step-by-step [INSTALL.md](INSTALL.md)
 4. [Using the GUI](#-using-the-gui)
 5. [Agentic mode (GitHub Copilot)](#-agentic-mode-github-copilot)
-6. [Command line](#-command-line)
+6. [Command line](#-command-line) — full automation guide: [CLI_AUTOMATION.md](CLI_AUTOMATION.md)
 7. [HTML report](#-html-report)
 8. [Configuration](#-configuration) — projects, axis settings, default ±Ref
 9. [Output structure](#-output-structure) and [column reference](#-column-reference)
@@ -43,13 +43,28 @@ You can drive it in three ways:
 |------|--------|
 | Branding | Product name **MarginIQ** with the subtitle *Intel CCG CVE Memory RMT Margin Analysis Tool* in the GUI, HTML report and PPT. Version via `--version` or Help ▸ About. |
 | Icon & shortcuts | Unique MarginIQ icon ([`assets/marginiq.ico`](assets/marginiq.ico)) on the GUI window, taskbar button and header. `setup.bat` creates a **Desktop shortcut** and asks whether to **pin to the taskbar** and add a **Start menu / Quick Launch** entry. `Launch_RMT_GUI.bat` gets an icon'd twin, `MarginIQ.lnk`. |
-| Project-agnostic | **Project** dropdown on Tab 1 and `--project NVL\|WCL` on the CLI, driven by `projects.json` (name, code, START_RMT header aliases, axis file). Add a project without code changes. WCL-style `RxVref` headers and per-byte `Mc0.C0.B0.R0` rows are parsed. |
-| Workflow | **↺ Analyze Another Log** replaces the disabled *Next* button on Tab 3 after a successful run; also *File ▸ New Analysis* (`Ctrl+N`). It resets Tab 1 to the launch state (*Boot / MRC logs* source, empty file list, default stage/profile, locked tabs, default axis values). Project, JMP path and PPT template are kept. |
+| Project-agnostic | **Project** dropdown on Tab 1 and `--project NVL\|WCL` on the CLI, driven by `projects.json` (name, code, START_RMT header aliases, axis file). Add a project without code changes. WCL-style `RxVref` headers and per-byte `Mc0.C0.B0.R0` rows are parsed; WCL DDR5 / LPDDR5 RVP variants are detected from the log and WCL DTR logs use their own `dtr` rules. |
+| Workflow | **↺ Analyze Another Log** replaces the disabled *Next* button on Tab 3 after a successful run; also *File ▸ New Analysis* (`Ctrl+N`). It resets Tab 1 to the launch state (*Boot / MRC logs* source, empty file list, default stage/profile, locked tabs, default axis values). Project, JMP path and PPT template are kept. Tab 1 is greyed out from *Run Pipeline* until then (unlocked again if the run fails or is stopped). |
 | Tab 2 layout | Grouped toolbar: **Axis Values** (apply / recalculate), **Axis Presets** (Save JSON, Load JSON, Load .jrp) and **JMP Graph Builder** (opens a live, editable Graph Builder with the current axis values). |
 | Default ±Ref | Configurable **+ Ref / − Ref** in the Tab 2 *Defaults*, saved as `defaults.ref_line_plus/minus`. Used whenever a parameter's own Ref is empty: JMP ref lines (now also on DTR charts), PASS/WARN/FAIL status and red raw-data cells. *Apply ±Ref to all* copies it to every charted parameter. |
 | HTML report | New **Mode Registers** and **ODT** tabs; the **JMP Charts** tab is now a dropdown-driven side-by-side comparison workspace; **Raw Data** is now an explorer (status, heatmap, numeric filters, views, export) with a **Δ Drift Comparison** (e.g. Boot → Run RMT). See [HTML report](#-html-report). |
 | Tab 3 | *Open HTML Report* button. |
 | Update notice | The GUI banner and CLI line say when a newer version is on the server and ask you to `git pull`. The check runs at most once a day. See [Staying up to date](#staying-up-to-date). |
+
+### Wildcat Lake (WCL) support & automation
+
+| Area | Change |
+|------|--------|
+| WCL log formats | **LPDDR5 RVP** (`START_BYTE_RMT`, per byte-rank `Mc0.C0.B0.R0`, header `RxVref`) and **DDR5 RVP** (`START_RMT` per rank). Validated with LP5 (7467 MT/s), DDR5 (5600 MT/s) and DDR5 thermal DTR logs. |
+| Only real RMT data | For WCL, data is taken **only** from inside *Rank Margin Tool -- Started … SUCCEEDED*. The "Composite UI" margin checks that MRC prints after every training step are never plotted. A log whose Rank Margin Tool never ran (or printed no block) gets `[warn] … NO RMT DATA … file skipped`; if no file has data the run exits with code 2. |
+| Platform variant | **WCL DDR5 RVP** / **WCL LPDDR5 RVP**, decoded from the log (`DDR5 CSODIMM` / `LPDDR5X Memory Down`, `Detected board:`), shown in the HTML header, the Platform tab and the PPT. LPDDR5X memory-down parts are decoded (type, ranks, width, size). |
+| WCL thermal (DTR) | `--dtr` uses the first and last *Rank Margin Tool* run (`x 0xdd44` re-runs) as Boot / Run RMT. Temperatures come from the **BCRH / BHRC** tag anywhere in the file name, because WCL logs print no usable PHY temperature. |
+| **Spec RMT limits** | PTL/WCL limits table (DDR5 3200–7200, LPDDR5 2400–9600 MT/s) in `projects.json`. The limit for the memory type + frequency **read from each log** becomes the ±Ref line in JMP / HTML / PPT, and a **Spec RMT Limits** PASS/FAIL table is added (HTML Overview card, PPT slide, `rmt_metadata.json` → `rmt_limits`). `--no-rmt-limits` or the Tab 2 checkbox switches it off. See [WCL spec RMT limits](#wcl-spec-rmt-limits-rmt_limits). |
+| Axis auto-fit | The GUI recalculates Min / Max / Inc from **each new log's data** as soon as Stage 1 finishes (no stale ranges from the previous log). WCL fills ±Ref with the spec limits. The CLI prints `[warn] JMP axis hides data …` when an axis JSON would clip points. |
+| Log capture gaps | A GREEN MRC task whose end line was lost by the serial capture is shown as **INCOMPLETE** (not RUNNING), with a log-gap alert in the Training Steps tab and PPT, and a `[warn]` line. |
+| Command line / automation | **`marginiq.cmd`** runs the pipeline from any folder with the repository's `.venv`, UTF-8 output and the exit code passed through. **[CLI_AUTOMATION.md](CLI_AUTOMATION.md)** has the complete command-prompt guide: recipes, GUI↔CLI mapping, exit codes, output / JSON contract, console messages and integration examples. The interactive runner (`rmt_pipeline_runner.py`) now asks for the Project, Thermal profile and spec limits; `--cmds` prints cmd.exe commands. |
+
+NVL (NVL-S / NVL-HX, DDR5) parsing and outputs are unchanged by all of the above.
 
 ---
 
@@ -65,10 +80,11 @@ Then do **one** of the following:
 
 - **GUI:** double-click the **MarginIQ** desktop icon. On Tab 1 pick the *Project*, add your logs and click *Generate CSV & Continue*. Tune the axes on Tab 2, click *Run Pipeline* on Tab 3, then *↺ Analyze Another Log* for the next set.
 - **Agentic:** open the folder in VS Code, switch Copilot Chat to **Agent** and ask *"Plot the RMT margins for the NVL logs in C:\path\to\logs"*.
-- **CLI:** run the pipeline directly:
-  ```powershell
-  .venv\Scripts\python.exe rmt_log_pipeline.py --project NVL --input "C:\path\to\logs" --pattern "*.log" --outdir "C:\path\to\out" --no-ask-chart-approval
+- **CLI:** run the pipeline directly from Command Prompt or PowerShell:
+  ```bat
+  marginiq.cmd --project WCL --input "C:\path\to\logs" --pattern "*.log" --outdir "C:\path\to\out" --no-ask-chart-approval
   ```
+  Everything for scripting and automation tools is in [CLI_AUTOMATION.md](CLI_AUTOMATION.md).
 
 ---
 
@@ -172,8 +188,9 @@ design.
 |-----|---------|
 | GUI | **MarginIQ** desktop / Start / taskbar icon, `MarginIQ.lnk`, or `Launch_RMT_GUI.bat` |
 | Agentic | VS Code ▸ Copilot Chat ▸ **Agent** mode — see [Agentic mode](#-agentic-mode-github-copilot) |
-| Pipeline CLI | `.venv\Scripts\python.exe rmt_log_pipeline.py --help` |
-| Interactive CLI menu | `.venv\Scripts\python.exe rmt_pipeline_runner.py` |
+| Pipeline CLI | `marginiq.cmd --help` (any folder) or `.venv\Scripts\python.exe rmt_log_pipeline.py --help` — [CLI_AUTOMATION.md](CLI_AUTOMATION.md) |
+| Interactive CLI menu | `.venv\Scripts\python.exe rmt_pipeline_runner.py` (`--quick`, `--cmds`, `--guide`) |
+| Guides in the browser | GUI *Help* menu / `F1`, or `marginiq.cmd --guide [readme\|quickstart\|cli\|install\|pipeline\|projects]` — see [Help menu](#help-menu) |
 
 Prefer an activated shell? Run `.venv\Scripts\activate.bat`; plain `python` then resolves to the virtual environment.
 
@@ -223,14 +240,38 @@ raise an IT ticket. See [INSTALL.md › JMP Pro](INSTALL.md#2-jmp-pro).
 ## 🖥️ Using the GUI
 
 The window has a **File** menu (*New Analysis* `Ctrl+N`, *Open Output Folder*, *Exit*), a **Help**
-menu (*User Guide*, *Open Debug Log Folder*, *About MarginIQ*), and three tabs driven by the
-*Previous / Next* bar.
+menu, and three tabs driven by the *Previous / Next* bar.
+
+### Help menu
+
+The guides open in your default browser through MarginIQ's built-in viewer
+([`rmt_help.py`](rmt_help.py)). It renders the local Markdown files as styled pages with a guide
+sidebar, an *On this page* contents panel, in-page search (`Ctrl+F` or `/`, `Enter` for the
+next match), *Copy* buttons on every command block, and working links between the guides. It
+uses the standard library only and works offline.
+
+| Item | Opens / does |
+|------|--------------|
+| **User Guide** (`F1`) · **Quick Start** · **Command Line & Automation** · **Installation Guide** · **Pipeline Reference** | `README.md`, `RMT_QUICKSTART.md`, `CLI_AUTOMATION.md`, `INSTALL.md`, `RMT_LOG_PIPELINE_README.md` |
+| **What's New** · **Troubleshooting & FAQ** | The matching section of the User Guide |
+| **Supported Projects & Spec Limits** | A page generated from `projects.json`: each project's parsing rules and the WCL DDR5 / LPDDR5 spec RMT limits table (ticks and ps / mV) |
+| **Open Debug Log Folder** · **Open Tool Folder** | Explorer at `logs\` / the repository folder |
+| **Copy Diagnostics for Support** | Copies version, git branch / commit, Python, Windows, project / profile / stage, JMP path, output folder, debug-log path and the current command preview to the clipboard |
+| **Check for Updates…** · **About MarginIQ** | Update check / version information |
+
+The same viewer works outside the GUI:
+
+| Mode | How |
+|------|-----|
+| Command Prompt / PowerShell | `marginiq.cmd --guide [readme\|quickstart\|cli\|install\|pipeline\|projects]` (or `.venv\Scripts\python.exe rmt_help.py <page>`) |
+| Interactive CLI menu | `rmt_pipeline_runner.py`, option **8**, or `rmt_pipeline_runner.py --guide <page>` |
+| Agentic (Copilot) | Ask *"open the CLI guide"* or *"show me the WCL spec limits table"*: the agent opens the page with the same viewer. For how-to questions it answers from the guides directly. |
 
 ### Tab 1 · Input & Workflow
 
 | Section | What to do |
 |---------|------------|
-| **Project & Experiment Profile** | **Project** (Nova Lake, Wildcat Lake, …) labels the reports and selects that platform's START_RMT header aliases. **Profile**: *Non-Thermal* or *Thermal Experiment (DTR)* for BCRH / BHRC logs (adds `--dtr`). |
+| **Project & Experiment Profile** | **Project** (Nova Lake, Wildcat Lake, …) labels the reports and selects that platform's parsing rules (header aliases, RMT block markers, DTR flow, platform variants, spec limits — see [Projects](#projects--projectsjson)). **Profile**: *Non-Thermal* or *Thermal Experiment (DTR)* for BCRH / BHRC logs (adds `--dtr`). |
 | **Data Source** | *Boot / MRC logs* (default), *Existing CSV*, *Existing Excel* or *PNG charts → PPT only*. |
 | **Files / Folder** | *Add Files…* / *Add Folder…* (filtered by *File Mask*, e.g. `*.log;*.txt`). |
 | **Multiple-File Handling** | *Concatenate* into one report (overlay by source) or process each file *Separately* (one subfolder each). |
@@ -242,7 +283,7 @@ menu (*User Guide*, *Open Debug Log Folder*, *About MarginIQ*), and three tabs d
 
 | Group | Controls |
 |-------|----------|
-| **Axis Values** | *Apply axis settings*; **↻ Recalculate from data** (Min / Max / Inc from the logs; ±Ref preserved). |
+| **Axis Values** | *Apply axis settings*; **↻ Recalculate from data** (Min / Max / Inc from the logs; ±Ref preserved). Runs automatically, without popups, as soon as Stage 1 produces the CSV (or CSVs are loaded), so every new log is charted on its own data range; manual edits made afterwards are kept. **Spec RMT limits as ±Ref (per frequency)** (default on): for projects with `rmt_limits` (WCL), Recalculate fills ±Ref with the spec limit for the memory type and frequency read from the log; untick to use your own ±Ref (`--no-rmt-limits`). These spec values are **display-only**: they are never saved to `jmp_axis_settings.json` or axis presets, and your own ±Ref returns when you switch project (e.g. to NVL, which always uses the ±Ref from the axis settings, default ±10), untick the box or reset. |
 | **Axis Presets** | **Save JSON…**, **Load JSON…**, **Load .jrp…** (clone scales from a JMP report). |
 | **JMP Graph Builder (interactive)** | Choose *All charted parameters* or one parameter, then **▶ Open**. JMP opens live Graph Builder windows using the current axis values. Fine-tune them, save as `.jrp` in JMP, and bring the scales back with *Load .jrp…*. |
 | **Defaults** | Inc, minor ticks, grids, **+ Ref / − Ref** (default ±10), *Apply ±Ref to all*, ref-line colours. |
@@ -251,9 +292,13 @@ menu (*User Guide*, *Open Debug Log Folder*, *About MarginIQ*), and three tabs d
 ### Tab 3 · Preview & Run
 
 An editable command preview (what you see is what runs), **▶ Run Pipeline**, **■ Stop**,
-*Open Output Folder*, *Open HTML Report* and a live output log. After a successful run the
-bottom-right button becomes **↺ Analyze Another Log**. It clears the session back to the
-launch state, so the next log set starts on Tab 1 with *Boot / MRC logs* selected.
+*Open Output Folder*, *Open HTML Report* and a live output log. As soon as *Run Pipeline* starts,
+**Tab 1 · Input & Workflow is greyed out** (and *← Previous* on Tab 2 is disabled), so the
+finished analysis cannot be re-parsed with half-changed inputs. Tabs 2 and 3 stay available.
+After a successful run the bottom-right button becomes **↺ Analyze Another Log**: the only way
+back to Tab 1. It clears the session back to the launch state, so the next log set starts on
+Tab 1 with *Boot / MRC logs* selected. If the run fails or is stopped, Tab 1 is unlocked again
+so you can correct the inputs (e.g. the JMP path).
 
 Every GUI action is logged in detail to `logs\rmt_gui_debug_<timestamp>.log`
 (*Help ▸ Open Debug Log Folder*). Attach it when reporting a problem.
@@ -323,30 +368,38 @@ resolved from `git rev-parse --show-toplevel`, so it works from any clone locati
 
 ## ⌨️ Command line
 
-```powershell
-.venv\Scripts\python.exe rmt_log_pipeline.py `
-  --project NVL `
-  --input "C:\path\to\logs" `
-  --pattern "*.log" `
-  --outdir "C:\path\to\out" `
-  --no-ask-chart-approval `
-  --generate-jmp-charts `
-  --jmp-exe "C:\Program Files\SAS\JMPPRO\17\jmp.exe" `
+From Command Prompt, PowerShell or any automation tool, use **`marginiq.cmd`** in the repository
+root. It runs from any folder with the repository's `.venv`, writes UTF-8 output and returns the
+pipeline's exit code. The flags are the same as `rmt_log_pipeline.py`.
+
+```bat
+marginiq.cmd --project WCL --input "C:\path\to\logs" --pattern "*.log" ^
+  --outdir "C:\path\to\out" --no-ask-chart-approval --no-update-check ^
+  --generate-jmp-charts --jmp-exe "C:\Program Files\SAS\JMPPRO\17\jmp.exe" ^
   --jmp-axis-config ".\jmp_axis_settings.json"
 ```
 
 | Key flags | Purpose |
 |-----------|---------|
-| `--project NVL\|WCL\|"Wildcat Lake"` | Platform from `projects.json` (default: registry default, `NVL`) |
-| `--dtr` | Thermal Experiment (BCRH / BHRC) parsing: Boot-temp and Run-temp RMT per log |
+| `--project NVL\|WCL\|"Wildcat Lake"` | Platform from `projects.json` (default: registry default, `NVL`). Selects that platform's parsing rules |
+| `--dtr` | Thermal Experiment (BCRH / BHRC): Boot-temp and Run-temp RMT per log (NVL and WCL flows) |
 | `--chart-fields a,b,c` | Parameters to chart (omit for all) |
 | `--generate-jmp-charts --jmp-exe <exe>` | JMP PNG charts and the JMP PPT |
+| `--no-rmt-limits` | WCL: use the axis-config ±Ref instead of the spec RMT limits |
 | `--jmp-from-csv <csv…>` / `--jmp-from-excel <xlsx>` / `--ppt-from-charts <dir>` | Reuse existing artifacts |
 | `--jmp-jsl-only` | Write the JSL without launching JMP |
+| `--no-ask-chart-approval` | Always pass in scripts (no prompt) |
 | `--version` | Print the MarginIQ version |
 | `--no-update-check` | Skip the (once-a-day) check for a newer version on the server |
 
-Full reference: [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md). Beginner walkthrough:
+**Exit codes:** 0 success (a WCL spec FAIL is still 0; read `rmt_metadata.json` → `rmt_limits.overall`)
+· 1 no input files · 2 bad arguments / unknown project / no RMT data · 3 chart approval denied
+· 4 `--jmp-exe` missing · 5 JMP failed.
+
+**Automation and scripting:** [CLI_AUTOMATION.md](CLI_AUTOMATION.md) covers recipes for NVL /
+WCL / DTR, the GUI ↔ CLI mapping, every flag, the output and JSON contract, console messages to
+scrape, environment variables, and batch / PowerShell / Python / Task Scheduler examples.
+Full flag manual: [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md). Beginner walkthrough:
 [RMT_QUICKSTART.md](RMT_QUICKSTART.md).
 
 ### Workflow stages
@@ -368,9 +421,9 @@ The HTML report and the native PPT are written in every stage that parses logs.
 
 | Tab | Content |
 |-----|---------|
-| Overview | KPI cards, margin degradation below ±Ref, window-width chart, statistics (Cpk, guardband), interactive multi-source dashboard |
+| Overview | KPI cards, **Spec RMT Limits** card (WCL: limit per memory type + frequency, worst −/+, failing rows, PASS/FAIL), margin degradation below ±Ref, window-width chart, statistics (Cpk, guardband), interactive multi-source dashboard |
 | Frequency / Parameters / RunTemp | Per-frequency, per-rank and temperature-drift charts |
-| Training Steps / Platform | MRC task timeline; board, CPU and DIMM (SPD) details |
+| Training Steps / Platform | MRC task timeline (SUCCEEDED / FAILED / RUNNING; **INCOMPLETE** = the task's end line is missing because the serial capture dropped lines, flagged with a log-gap alert and a `[warn]` line); board, CPU and DIMM (SPD) details |
 | **Mode Registers** | Final per-rank DDR5 MR values (from *SAGV Finalization*), JEDEC decodes (CL, Ron, VrefDQ/CA/CS, RTT_*, ODTL), amber = changed by training vs the JEDEC-reset value, bold = differs between ranks, filters, and a **cross-log MR diff** |
 | **ODT** | DIMM ODT summary (RonUp/Dn, **RTT_WR**, NomWr, NomRd, Park, ParkDqs, CA/CS groups), CPU read ODT, per-rank ODT decoded from MR32–36, ODT latency offsets, BIOS ODT inputs, and a **cross-log ODT matrix** |
 | **JMP Charts** | Comparison workspace. Every panel has a chart dropdown; set 1–3 panels per row, add or remove panels, reset. Pre-filled with every chart, so it is never blank. |
@@ -384,14 +437,82 @@ The HTML report and the native PPT are written in every stage that parses logs.
 ### Projects — [`projects.json`](projects.json)
 
 ```json
-"WCL": { "name": "Wildcat Lake", "code": "WCL", "memory": "DDR5",
+"WCL": { "name": "Wildcat Lake", "code": "WCL", "memory": "DDR5 / LPDDR5",
          "param_aliases": { "RxVref": "RxDqVrefByte" },
+         "rmt_fallback_markers": ["START_BYTE_RMT"],
+         "require_rmt_task": true,
+         "platform_variants": { "DDR5": "WCL DDR5 RVP", "LPDDR5": "WCL LPDDR5 RVP" },
+         "dtr": { "layout": "rmt_task_runs",
+                  "rmt_markers": ["START_RMT", "START_BYTE_RMT"],
+                  "temps_from_filename": true },
+         "rmt_limits": { "LPDDR5": { "frequencies": { "7467": { "ticks": { "TxVref": [25, 25], … },
+                                                               "physical": { "TxVref": [63, 63], … } }, … } },
+                         "DDR5":   { … } },
          "axis_config": "jmp_axis_settings.json" }
 ```
 
 Add an entry to support a new platform. It appears in the GUI dropdown and is accepted by
 `--project`. `param_aliases` maps a log's START_RMT header name to MarginIQ's canonical
-parameter name.
+parameter name. The other keys are optional; projects without them (e.g. NVL) keep the
+built-in behaviour.
+
+- **`rmt_fallback_markers`** lists extra block markers (WCL LPDDR5 prints `START_BYTE_RMT`)
+  that are parsed **only when a log has no `START_RMT` data**, and only inside
+  "Rank Margin Tool" task runs.
+- **`require_rmt_task`** (default `false`): RMT data is taken **only** from inside the
+  "Rank Margin Tool" MRC task (`-- Started` … `-- SUCCEEDED`). The per-training-step
+  "Rank Margin Testing for Composite UI errors" blocks that MRC prints after each GREEN MRC
+  task are never plotted. A log whose Rank Margin Tool task never ran, or ran without
+  printing a block, gets a warning and is skipped:
+  `[warn] <file>: NO RMT DATA - the 'Rank Margin Tool' MRC task never ran in this log; file skipped. 17 per-training-step Composite-UI block(s) elsewhere were ignored.`
+  If no input file has RMT data, the run exits with code 2. When this is `false` (NVL), logs
+  without any task markers (e.g. consolidated RMT snippets) still read `START_RMT` anywhere.
+- **`platform_variants`** maps the memory family decoded from the log (`DDR5 CSODIMM` →
+  DDR5, `LPDDR5X Memory Down` → LPDDR5; the `Detected board:` line is the fallback) to a
+  variant label. The label appears in the HTML header and Platform tab and on the PPT title
+  and Test Configuration slides.
+- **`dtr`** overrides `--dtr` parsing. `layout: "rmt_task_runs"` means Boot RMT is the first
+  "Rank Margin Tool" run and Run RMT is the last one (WCL re-runs it from the MRC interpreter
+  with `x 0xdd44`; there is no NVL-style "Temp Drift RMT Test" / "Hit Enter").
+  `rmt_markers` lists the accepted block markers. `temps_from_filename` takes the Boot / Run
+  temperatures from the BCRH (0 → 90 °C) or BHRC (90 → 0 °C) tag anywhere in the file name,
+  because these logs print no usable PHY temperature.
+
+#### WCL log support status
+
+| WCL log type | Status |
+| --- | --- |
+| LPDDR5 RVP, non-thermal single boot | Supported: the per-byte `START_BYTE_RMT` block inside the "Rank Margin Tool" task. Validated with `teraterm_17092026.log` (board `WCL LP5 RVP2`, 7467 MT/s). Logs without that task (e.g. `13082026_lp5_siv_minibios.log`) are flagged `NO RMT DATA` and skipped. |
+| DDR5 RVP, thermal DTR (`--dtr`, BCRH / BHRC) | Supported (`dtr` rules above) |
+| DDR5 RVP, non-thermal single boot | Supported. Same layout as NVL: per-rank `START_RMT` blocks, where only the block inside the "Rank Margin Tool" task is used and the per-training-step Composite-UI blocks are ignored. Validated with `WCL_DDR5_RVP\5600_g4.log` (board `WCL R DDR5 RVP3`). |
+| LPDDR5 RVP, thermal DTR | Not yet seen; the `dtr` rules apply if the flow matches the DDR5 one. |
+
+NVL (NVL-S and NVL-HX, DDR5 only) uses the built-in `START_RMT` and DTR flows unchanged.
+
+#### WCL spec RMT limits (`rmt_limits`)
+
+`projects.json` holds the PTL/WCL RMT limits table (A. Magrlashvili, 24 Feb 2026) for
+**LPDDR5** (2400 – 9600 MT/s) and **DDR5** (3200 – 7200 MT/s), stored in RMT ticks with the
+physical values (ps / mV). Mail columns map to MarginIQ parameters as RdT → `RxDqsDelay`,
+WrT → `TxDqDelay`, RdV → `RxDqVrefByte`, WrV → `TxVref`, CmdT → `ClkGrpPi` and
+CmdV → `CmdVref`. For each WCL log:
+
+1. The memory family is decoded from the log (`DDR5 CSODIMM` → DDR5, `LPDDR5X Memory Down` →
+   LPDDR5) and the frequency is read from the log (`Frequency=7467`). The matching row is
+   used. If the frequency is not in the table, the nearest listed frequency is used and a
+   `[warn]` is printed.
+2. Those limits become the per-parameter **±Ref lines** in the JMP charts (non-thermal and
+   DTR), the HTML report (raw-data highlighting, statistics thresholds) and the PPT. The axis
+   is widened when needed so the limit line stays visible.
+3. A **Spec RMT Limits** card (top of the HTML Overview tab) and PPT slide list each
+   parameter's limit in ticks and physical units, the worst − / + margin, and the failing
+   rows. A rank fails when either side is weaker than its limit. Failures are also printed
+   as `[warn] RMT spec FAIL …`.
+
+If one run mixes several memory/frequency combinations, the chart ±Ref lines use the
+strictest limit, while the PASS/FAIL table checks every row against its own limit.
+`--no-rmt-limits` (or unticking the GUI checkbox) falls back to the axis-config ±Ref.
+Projects without `rmt_limits` (NVL) are not affected.
 
 ### Axis settings and default ±Ref — [`jmp_axis_settings.json`](jmp_axis_settings.json)
 
@@ -434,8 +555,8 @@ output_dir/
 ├── csv_by_file/<log>_RMT.csv       # one CSV per source log
 ├── RMT_Extraction.xlsx             # All_RMT + per-file + per-frequency sheets
 ├── RMT_Report.html                 # interactive report (MR / ODT / JMP comparison tabs)
-├── RMT_Summary.pptx                # native PowerPoint summary
-├── rmt_metadata.json               # training steps, platform, MR / ODT data (reused by --jmp-from-csv)
+├── RMT_Summary.pptx                # native PowerPoint summary (WCL: + Spec RMT Limits slide)
+├── rmt_metadata.json               # training steps, platform / variant, MR / ODT data, WCL rmt_limits PASS/FAIL (reused by --jmp-from-csv)
 ├── rmt_jmp_charts.jsl              # JMP script (JMP stages)
 ├── rmt_graph_builder.jsl           # interactive Graph Builder script (GUI Tab 2)
 ├── RMT_Summary_JMP_Charts.pptx     # deck built from the JMP PNGs
@@ -462,7 +583,11 @@ output_dir/
 | [README.md](README.md) | This user guide |
 | [INSTALL.md](INSTALL.md) | Step-by-step installation: Python / PATH, JMP Pro from Company Portal, licence, setup errors |
 | [RMT_QUICKSTART.md](RMT_QUICKSTART.md) | 5-minute beginner guide (GUI, agent, CLI) |
+| [CLI_AUTOMATION.md](CLI_AUTOMATION.md) | Command-prompt & automation guide: recipes, GUI↔CLI mapping, flags, exit codes, output / JSON contract, integration examples |
 | [RMT_LOG_PIPELINE_README.md](RMT_LOG_PIPELINE_README.md) | Complete CLI reference manual |
+| [marginiq.cmd](marginiq.cmd) | Command-prompt entry point (repo `.venv`, UTF-8 output, exit code passed through) |
+| [rmt_pipeline_runner.py](rmt_pipeline_runner.py) | Interactive command-line menu (`--quick`, `--cmds`) for people |
+| [rmt_help.py](rmt_help.py) | Built-in Help viewer: renders the guides and the projects / spec-limits page as HTML (GUI *Help* menu, `F1`) |
 | [.github/skills/rmt-margin-plots/SKILL.md](.github/skills/rmt-margin-plots/SKILL.md) | Copilot agent skill (agentic mode) |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | Repository rules for Copilot |
 | [setup.bat](setup.bat) | Environment setup and shortcuts |
@@ -499,6 +624,24 @@ report embeds them.
 
 **What if I deny chart approval (interactive CLI)?** The script exits with code 3. The CSV
 and Excel are still written.
+
+**WCL: why does a log give "NO RMT DATA"?** MarginIQ takes WCL margins only from inside the
+*Rank Margin Tool* MRC task. If that task never ran (e.g. MRC stopped in *EV Debug functions*
+or an endless run) or printed no `START_RMT` / `START_BYTE_RMT` block, the log is skipped.
+Plotting the per-training-step "Composite UI" checks as RMT would be misleading. Re-run the
+board with RMT enabled.
+
+**WCL: which spec limit is used?** The one for the memory type decoded from the log (DDR5 or
+LPDDR5) and the frequency read from the log (`Frequency=…`). A frequency that is not in the
+table uses the nearest listed one, with a `[warn]`. See
+[WCL spec RMT limits](#wcl-spec-rmt-limits-rmt_limits).
+
+**Why is a training step INCOMPLETE?** Its SUCCEEDED / FAILED line is missing from the log
+because the serial capture (e.g. TeraTerm) dropped lines. The RMT margins are not affected.
+Recapture the log if you need the full timeline.
+
+**How do I drive MarginIQ from another tool?** Call `marginiq.cmd` with the same flags, check
+the exit code, then read `rmt_metadata.json`. See [CLI_AUTOMATION.md](CLI_AUTOMATION.md).
 
 ---
 
@@ -593,6 +736,8 @@ For an environment variable, fix or delete it under Windows Settings >
 - Verify the input files contain `START_RMT` text and rows like `Mc0.C0.R0: -32.0 32.0 ...`.
 - Check `--pattern` / *File Mask* matches your extension (`*.log` vs `*.txt`).
 - For another platform, pick the right **Project**, or add its header aliases to `projects.json`.
+- **WCL:** look for `[warn] <file>: NO RMT DATA - …` in the run log. The Rank Margin Tool task
+  never ran, or printed no block between *Started* and *SUCCEEDED* (see the FAQ).
 
 ### Missing CSV / Excel / PPT
 
@@ -613,8 +758,8 @@ Save your JMP work first.
 
 ### Reporting a problem
 
-Attach the GUI debug log (*Help ▸ Open Debug Log Folder*), the command preview from Tab 3,
-and the output folder's `rmt_metadata.json`.
+Use **Help ▸ Copy Diagnostics for Support** and paste the result into your message. Attach
+the GUI debug log (*Help ▸ Open Debug Log Folder*) and the output folder's `rmt_metadata.json`.
 
 ---
 

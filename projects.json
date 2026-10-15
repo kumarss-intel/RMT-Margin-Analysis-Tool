@@ -1,5 +1,5 @@
 {
-  "_comment": "MarginIQ project registry. Add a new platform by adding an entry under 'projects' - no code change needed. 'param_aliases' maps a log's START_RMT header name to the tool's canonical parameter name (e.g. WCL prints RxVref where NVL prints RxDqVrefByte). 'axis_config' is the default Y-axis JSON for that project (relative to the repo root).",
+  "_comment": "MarginIQ project registry. Add a new platform by adding an entry under 'projects' - no code change needed. 'param_aliases' maps a log's START_RMT header name to the tool's canonical parameter name (e.g. WCL prints RxVref where NVL prints RxDqVrefByte). 'rmt_fallback_markers' (optional) lists extra block markers (e.g. WCL START_BYTE_RMT) parsed ONLY when a log has no START_RMT data and only inside 'Rank Margin Tool' task runs. 'require_rmt_task' (optional, default false) = RMT data is taken ONLY from inside the 'Rank Margin Tool' MRC task; a log without it (or with an empty task) is reported with a NO RMT DATA warning and skipped, so per-training-step Composite-UI blocks are never plotted. 'platform_variants' (optional) maps the memory family decoded from the log (DDR5 / LPDDR5) to a platform variant label shown in the Platform tab and PPT. 'dtr' (optional) overrides the thermal DTR parsing: layout 'rmt_task_runs' = Boot RMT is the first 'Rank Margin Tool' run and Run RMT the last, 'rmt_markers' = accepted block start markers, 'temps_from_filename' = Boot/Run temps from BCRH (0/90) or BHRC (90/0) in the file name. Projects without 'dtr' use the built-in NVL flow (Temp Drift RMT Test + Hit Enter + PHY Temperature1). 'axis_config' is the default Y-axis JSON for that project (relative to the repo root). 'rmt_limits' (optional) = spec pass/fail limits per memory family (DDR5 / LPDDR5, decoded from the log) and frequency (read from the log): used as the +/-Ref lines in JMP / HTML / PPT and for the spec PASS/FAIL table; nearest listed frequency is used (with a warning) when the exact one is missing. Disable with --no-rmt-limits.",
   "default": "NVL",
   "projects": {
     "NVL": {
@@ -12,9 +12,331 @@
     "WCL": {
       "name": "Wildcat Lake",
       "code": "WCL",
-      "memory": "DDR5",
+      "memory": "DDR5 / LPDDR5",
       "param_aliases": {
         "RxVref": "RxDqVrefByte"
+      },
+      "rmt_fallback_markers": ["START_BYTE_RMT"],
+      "require_rmt_task": true,
+      "platform_variants": {
+        "DDR5": "WCL DDR5 RVP",
+        "LPDDR5": "WCL LPDDR5 RVP"
+      },
+      "dtr": {
+        "layout": "rmt_task_runs",
+        "rmt_markers": ["START_RMT", "START_BYTE_RMT"],
+        "temps_from_filename": true
+      },
+      "rmt_limits": {
+        "_source": "PTL/WCL RMT limits - Akiva Magrlashvili, 24 Feb 2026 (RE: Eye mask limit needed for WCL DDR5, LPDDR5)",
+        "_mapping": "RdT=RxDqsDelay, WrT=TxDqDelay, RdV=RxDqVrefByte (RxVref), WrV=TxVref, CmdT=ClkGrpPi, CmdV=CmdVref",
+        "_units": "ticks = RMT units (timing: UI/64 PI ticks; voltage: Vref steps); each value is [L, H] = [minus side, plus side] magnitude. physical: timing in ps, voltage in mV",
+        "physical_units": {
+          "RxDqsDelay": "ps",
+          "TxDqDelay": "ps",
+          "ClkGrpPi": "ps",
+          "RxDqVrefByte": "mV",
+          "TxVref": "mV",
+          "CmdVref": "mV"
+        },
+        "LPDDR5": {
+          "cpu_vdd": 0.5,
+          "frequencies": {
+            "2400": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [45, 45],
+                "TxVref": [25, 25],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [40, 40]
+              },
+              "physical": {
+                "RxDqsDelay": [91, 91],
+                "TxDqDelay": [91, 91],
+                "RxDqVrefByte": [44, 44],
+                "TxVref": [63, 63],
+                "ClkGrpPi": [260, 260],
+                "CmdVref": [100, 100]
+              }
+            },
+            "4800": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [45, 45],
+                "TxVref": [25, 25],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [40, 40]
+              },
+              "physical": {
+                "RxDqsDelay": [46, 46],
+                "TxDqDelay": [46, 46],
+                "RxDqVrefByte": [44, 44],
+                "TxVref": [63, 63],
+                "ClkGrpPi": [130, 130],
+                "CmdVref": [100, 100]
+              }
+            },
+            "6000": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [45, 45],
+                "TxVref": [25, 25],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [40, 40]
+              },
+              "physical": {
+                "RxDqsDelay": [36, 36],
+                "TxDqDelay": [36, 36],
+                "RxDqVrefByte": [44, 44],
+                "TxVref": [63, 63],
+                "ClkGrpPi": [104, 104],
+                "CmdVref": [100, 100]
+              }
+            },
+            "6400": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [45, 45],
+                "TxVref": [25, 25],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [40, 40]
+              },
+              "physical": {
+                "RxDqsDelay": [34, 34],
+                "TxDqDelay": [34, 34],
+                "RxDqVrefByte": [44, 44],
+                "TxVref": [63, 63],
+                "ClkGrpPi": [98, 98],
+                "CmdVref": [100, 100]
+              }
+            },
+            "6800": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [45, 45],
+                "TxVref": [25, 25],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [40, 40]
+              },
+              "physical": {
+                "RxDqsDelay": [32, 32],
+                "TxDqDelay": [32, 32],
+                "RxDqVrefByte": [44, 44],
+                "TxVref": [63, 63],
+                "ClkGrpPi": [92, 92],
+                "CmdVref": [100, 100]
+              }
+            },
+            "7467": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [45, 45],
+                "TxVref": [25, 25],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [40, 40]
+              },
+              "physical": {
+                "RxDqsDelay": [29, 29],
+                "TxDqDelay": [29, 29],
+                "RxDqVrefByte": [44, 44],
+                "TxVref": [63, 63],
+                "ClkGrpPi": [84, 84],
+                "CmdVref": [100, 100]
+              }
+            },
+            "8000": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [45, 45],
+                "TxVref": [25, 25],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [40, 40]
+              },
+              "physical": {
+                "RxDqsDelay": [27, 27],
+                "TxDqDelay": [27, 27],
+                "RxDqVrefByte": [44, 44],
+                "TxVref": [63, 63],
+                "ClkGrpPi": [78, 78],
+                "CmdVref": [100, 100]
+              }
+            },
+            "8533": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [45, 45],
+                "TxVref": [25, 25],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [40, 40]
+              },
+              "physical": {
+                "RxDqsDelay": [26, 26],
+                "TxDqDelay": [26, 26],
+                "RxDqVrefByte": [44, 44],
+                "TxVref": [63, 63],
+                "ClkGrpPi": [73, 73],
+                "CmdVref": [100, 100]
+              }
+            },
+            "9600": {
+              "ticks": {
+                "RxDqsDelay": [13, 13],
+                "TxDqDelay": [13, 13],
+                "RxDqVrefByte": [45, 45],
+                "TxVref": [25, 25],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [40, 40]
+              },
+              "physical": {
+                "RxDqsDelay": [21, 21],
+                "TxDqDelay": [21, 21],
+                "RxDqVrefByte": [44, 44],
+                "TxVref": [63, 63],
+                "ClkGrpPi": [65, 65],
+                "CmdVref": [100, 100]
+              }
+            }
+          }
+        },
+        "DDR5": {
+          "cpu_vdd": 1.1,
+          "frequencies": {
+            "3200": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [32, 32],
+                "TxVref": [20, 20],
+                "ClkGrpPi": [40, 40],
+                "CmdVref": [18, 18]
+              },
+              "physical": {
+                "RxDqsDelay": [68, 68],
+                "TxDqDelay": [68, 68],
+                "RxDqVrefByte": [69, 69],
+                "TxVref": [110, 110],
+                "ClkGrpPi": [195, 195],
+                "CmdVref": [99, 99]
+              }
+            },
+            "4800": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [32, 32],
+                "TxVref": [20, 20],
+                "ClkGrpPi": [20, 20],
+                "CmdVref": [18, 18]
+              },
+              "physical": {
+                "RxDqsDelay": [46, 46],
+                "TxDqDelay": [46, 46],
+                "RxDqVrefByte": [69, 69],
+                "TxVref": [110, 110],
+                "ClkGrpPi": [65, 65],
+                "CmdVref": [99, 99]
+              }
+            },
+            "5600": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [32, 32],
+                "TxVref": [20, 20],
+                "ClkGrpPi": [20, 20],
+                "CmdVref": [16, 16]
+              },
+              "physical": {
+                "RxDqsDelay": [39, 39],
+                "TxDqDelay": [39, 39],
+                "RxDqVrefByte": [69, 69],
+                "TxVref": [110, 110],
+                "ClkGrpPi": [56, 56],
+                "CmdVref": [88, 88]
+              }
+            },
+            "6000": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [32, 32],
+                "TxVref": [20, 20],
+                "ClkGrpPi": [20, 20],
+                "CmdVref": [15, 15]
+              },
+              "physical": {
+                "RxDqsDelay": [36, 36],
+                "TxDqDelay": [36, 36],
+                "RxDqVrefByte": [69, 69],
+                "TxVref": [110, 110],
+                "ClkGrpPi": [52, 52],
+                "CmdVref": [83, 83]
+              }
+            },
+            "6400": {
+              "ticks": {
+                "RxDqsDelay": [14, 14],
+                "TxDqDelay": [14, 14],
+                "RxDqVrefByte": [32, 32],
+                "TxVref": [20, 20],
+                "ClkGrpPi": [20, 20],
+                "CmdVref": [14, 14]
+              },
+              "physical": {
+                "RxDqsDelay": [34, 34],
+                "TxDqDelay": [34, 34],
+                "RxDqVrefByte": [69, 69],
+                "TxVref": [110, 110],
+                "ClkGrpPi": [49, 49],
+                "CmdVref": [77, 77]
+              }
+            },
+            "6800": {
+              "ticks": {
+                "RxDqsDelay": [13, 13],
+                "TxDqDelay": [13, 13],
+                "RxDqVrefByte": [28, 28],
+                "TxVref": [18, 18],
+                "ClkGrpPi": [20, 20],
+                "CmdVref": [14, 14]
+              },
+              "physical": {
+                "RxDqsDelay": [30, 30],
+                "TxDqDelay": [30, 30],
+                "RxDqVrefByte": [60, 60],
+                "TxVref": [99, 99],
+                "ClkGrpPi": [46, 46],
+                "CmdVref": [77, 77]
+              }
+            },
+            "7200": {
+              "ticks": {
+                "RxDqsDelay": [13, 13],
+                "TxDqDelay": [13, 13],
+                "RxDqVrefByte": [25, 25],
+                "TxVref": [16, 16],
+                "ClkGrpPi": [20, 20],
+                "CmdVref": [13, 13]
+              },
+              "physical": {
+                "RxDqsDelay": [28, 28],
+                "TxDqDelay": [28, 28],
+                "RxDqVrefByte": [54, 54],
+                "TxVref": [88, 88],
+                "ClkGrpPi": [43, 43],
+                "CmdVref": [72, 72]
+              }
+            }
+          }
+        }
       },
       "axis_config": "jmp_axis_settings.json"
     }
