@@ -2242,6 +2242,9 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
         end_line    : 1-based line number of the end event (None if open)
         iteration   : 0-based iteration counter (increments at Pre-Training)
         source      : source_name
+        post_code   : POST code printed just before the Start line, e.g. "DD57h"
+                      (GREEN tasks use "GREEN Post Code:", BLUE tasks "Post Code:";
+                      the last one since the previous task event; None if absent)
         note        : only on log-gap entries (see below)
 
     GREEN MRC tasks never overlap in a complete log, so a GREEN task still
@@ -2258,12 +2261,15 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
         r"^(?:(GREEN) )?MRC task (.+?) -- (SUCCEEDED|FAILED), Status = (\w+)",
         _re.IGNORECASE,
     )
+    POST_RE = _re.compile(r"^(GREEN )?Post Code:\s*([0-9A-Fa-f]+)h?\b", _re.IGNORECASE)
 
     tasks: list[dict[str, Any]] = []
     # open_tasks maps name -> task dict so we can back-fill end info
     open_tasks: dict[str, dict[str, Any]] = {}
     iteration = 0
     seen_pre_training = False
+    # Latest POST code per task type since the previous task Start/End line.
+    last_post: dict[bool, str | None] = {True: None, False: None}
 
     def _close_open_green(lineno: int) -> None:
         for prev_name, prev in list(open_tasks.items()):
@@ -2279,10 +2285,17 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
 
+        m = POST_RE.match(line)
+        if m:
+            last_post[bool(m.group(1))] = f"{m.group(2).upper()}h"
+            continue
+
         m = START_RE.match(line)
         if m:
             is_green = bool(m.group(1))
             name = m.group(2).strip()
+            post_code = last_post[is_green]
+            last_post = {True: None, False: None}
             if is_green:
                 _close_open_green(lineno)
             # Each "Pre-Training" starts a new sweep/iteration (skip the very first)
@@ -2299,6 +2312,7 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
                 "end_line":    None,
                 "iteration":   iteration,
                 "source":      source_name,
+                "post_code":   post_code,
             }
             open_tasks[name] = task
             tasks.append(task)
@@ -2306,6 +2320,7 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
 
         m = END_RE.match(line)
         if m:
+            last_post = {True: None, False: None}
             name = m.group(2).strip()
             status = m.group(3).upper()
             code = m.group(4)
@@ -2325,6 +2340,7 @@ def parse_training_steps(text: str, source_name: str) -> list[dict[str, Any]]:
                     "end_line":    lineno,
                     "iteration":   iteration,
                     "source":      source_name,
+                    "post_code":   None,
                     "note":        "Started line missing - log gap",
                 })
                 print(f"  [warn] {source_name}: GREEN MRC task '{name}' ends at line {lineno} "
@@ -3111,12 +3127,13 @@ def build_ppt_professional(
         if _gap_names:
             sum_rows.append(("⚠ Log capture gaps",
                              f"{len(_gap_names)}: {', '.join(_gap_names)[:60]}"))
-        failed_tasks = [(t["name"], t["iteration"], t.get("status_code") or "?")
+        failed_tasks = [(t["name"], t["iteration"], t.get("status_code") or "?", t.get("post_code"))
                         for t in training_steps if t["status"] == "FAILED"]
         if failed_tasks:
             sum_rows.append(("⚠ Failed Tasks", ""))
-            for fn, fi, fc in failed_tasks[:6]:
-                sum_rows.append((f"  Iter {fi+1}: {fn}", f"Status={fc}"))
+            for fn, fi, fc, fpc in failed_tasks[:6]:
+                sum_rows.append((f"  Iter {fi+1}: {fn}",
+                                 f"Status={fc}" + (f"  |  Post Code {fpc}" if fpc else "")))
 
         n_sr = len(sum_rows) + 1
         sum_tbl = st_slide.shapes.add_table(
@@ -3151,7 +3168,8 @@ def build_ppt_professional(
             it = by_iter[iter_num]
             ip = sum(1 for x in it if x["status"] == "SUCCEEDED")
             if_ = sum(1 for x in it if x["status"] == "FAILED")
-            fail_names = "; ".join(x["name"] for x in it if x["status"] == "FAILED")
+            fail_names = "; ".join(x["name"] + (f" ({x['post_code']})" if x.get("post_code") else "")
+                                   for x in it if x["status"] == "FAILED")
             bg = FAIL_BG if if_ else (ALT if ri % 2 == 0 else None)
             set_cell(it_tbl.cell(ri, 0), str(iter_num), bg=bg, fg=NAVY, sz=9)
             set_cell(it_tbl.cell(ri, 1), str(len(it)),   bg=bg, fg=NAVY, sz=9)
@@ -3354,11 +3372,16 @@ def _build_training_steps_html(training_steps: list[dict] | None) -> list[str]:
             return '<span class="badge" style="background:#198754">GREEN</span>'
         return '<span class="badge bg-primary">BLUE</span>'
 
-    def _status_badge(s: str) -> str:
+    def _status_badge(s: str, code: str | None = None) -> str:
+        # MRC end status ("Status = 23h"): shown in the badge for failures and
+        # any non-zero code; 0h (success) only as a tooltip.
+        nonzero = bool(code) and code.lower().rstrip("h").lstrip("0") != ""
+        code_txt = f" &middot; {_html.escape(code)}" if code and (nonzero or s == "FAILED") else ""
+        tip = f' title="MRC status code {_html.escape(code)}"' if code else ""
         if s == "SUCCEEDED":
-            return '<span class="badge bg-success">&#10003; SUCCEEDED</span>'
+            return f'<span class="badge bg-success"{tip}>&#10003; SUCCEEDED{code_txt}</span>'
         if s == "FAILED":
-            return '<span class="badge bg-danger">&#10007; FAILED</span>'
+            return f'<span class="badge bg-danger"{tip}>&#10007; FAILED{code_txt}</span>'
         if s == "INCOMPLETE":
             return ('<span class="badge bg-secondary" title="End line missing from the log '
                     '(capture gap)">&#9888; INCOMPLETE</span>')
@@ -3420,8 +3443,8 @@ def _build_training_steps_html(training_steps: list[dict] | None) -> list[str]:
                 '<div class="table-responsive">',
                 '<table class="table table-sm table-hover align-middle mb-0" style="font-size:.8rem">',
                 '<thead class="table-dark sticky-top">'
-                '<tr><th>#</th><th>Type</th><th>Task Name</th>'
-                '<th>Status</th><th>Code</th>'
+                '<tr><th>#</th><th>Type</th><th>Task Name</th><th>Post Code</th>'
+                '<th>Status</th>'
                 '<th>Start Line</th><th>End Line</th><th>Span</th></tr></thead>',
                 '<tbody>',
             ]
@@ -3441,8 +3464,8 @@ def _build_training_steps_html(training_steps: list[dict] | None) -> list[str]:
                     f'<td class="text-muted small">{idx}</td>'
                     f'<td>{_type_badge(t["task_type"])}</td>'
                     f'<td class="fw-semibold">{t["name"]}{note}</td>'
-                    f'<td>{_status_badge(t["status"])}</td>'
-                    f'<td><code class="small">{t["status_code"] or "&#8212;"}</code></td>'
+                    f'<td><code class="small">{_html.escape(t.get("post_code") or "") or "&#8212;"}</code></td>'
+                    f'<td>{_status_badge(t["status"], t.get("status_code"))}</td>'
                     f'<td class="text-muted small">{t["start_line"] or "&#8212;"}</td>'
                     f'<td class="text-muted small">{t["end_line"] or "&#8212;"}</td>'
                     f'<td class="text-muted small">{span}</td>'
@@ -3643,6 +3666,70 @@ def _build_rmt_limits_html(info: dict[str, Any] | None) -> str:
         '<thead class="table-dark"><tr><th>Parameter</th><th>Limit (ticks)</th><th>Limit (physical)</th>'
         '<th>Worst &minus;</th><th>Worst +</th><th>Failing ranks</th><th>Failing rows (&minus;/+)</th>'
         '<th>Result</th></tr></thead><tbody>' + "".join(rows) + '</tbody></table></div></div>'
+    )
+
+
+def _build_raw_help_html(info: dict[str, Any] | None) -> str:
+    """Raw Data tab explainer: Status, Warn band and Min margin vs Ref, and how to use them."""
+    if info:
+        combos = ", ".join(f"{c['family']} {c['table_freq']} MT/s" for c in info["combos"])
+        ref_src = (f"the <b>spec RMT limits</b> for <b>{_html.escape(combos)}</b> (memory type and "
+                   "frequency read from the log; the same values as the &plusmn;Ref lines in the "
+                   "charts and the Spec RMT Limits card on the Overview tab)")
+        fail_meaning = "does not meet the spec limit"
+    else:
+        ref_src = ("the <b>&plusmn;Ref</b> from the axis settings (GUI Tab 2 &middot; Parameters &amp; "
+                   "Axis or <code>jmp_axis_settings.json</code>; default &plusmn;10 ticks)")
+        fail_meaning = "is below the reference"
+    return (
+        '<details id="rawHelp" class="raw-help mb-2" open>'
+        '<summary>&#x2139;&#xFE0F; How to read <b>Status</b>, the <b>Warn band</b> and '
+        '<b>Min margin vs Ref</b> &mdash; and how to use them for decisions</summary>'
+        '<div class="raw-help-body">'
+        f'<p class="mb-2"><b>Reference (&plusmn;Ref).</b> Every margin is judged against a reference '
+        f'line, in RMT ticks. In this report the reference is {ref_src}. Hover a parameter header to '
+        'see its Ref.</p>'
+        '<div class="row g-3">'
+        '<div class="col-lg-6">'
+        '<h6>1 &middot; Status of each margin (cell colour) and of the row</h6>'
+        '<table class="table table-sm table-bordered mb-1 raw-help-tbl"><tbody>'
+        '<tr><td><span class="rs rs-FAIL">FAIL</span></td><td>|margin| &lt; Ref</td>'
+        f'<td>Below the reference: the rank {fail_meaning}.</td></tr>'
+        '<tr><td><span class="rs rs-WARN">WARN</span></td><td>Ref &le; |margin| &lt; '
+        '<span class="wbv">2</span>&times; Ref</td><td>Meets the reference, but with little guardband.</td></tr>'
+        '<tr><td><span class="rs rs-PASS">PASS</span></td><td>|margin| &ge; <span class="wbv">2</span>&times; Ref</td>'
+        '<td>Comfortable margin.</td></tr></tbody></table>'
+        '<p class="mb-2">The row <b>Status</b> is the worst of its cells: both sides (&minus; / +) of every '
+        'visible parameter. Hidden parameters (Columns menu) are not counted.</p>'
+        '<h6>2 &middot; Warn band</h6>'
+        '<p class="mb-0">Sets where WARN ends: a margin needs at least <b><span class="wbv">2</span>&times; Ref</b> '
+        'to be PASS. Example: Ref 40 &rarr; FAIL below 40, WARN 40&ndash;<span class="wbx">80</span>, PASS from '
+        '<span class="wbx">80</span>. <b>2&times;</b> (default) is the conservative screen and matches the 2&times; '
+        'rule of the Overview statistics; <b>1.5&times;</b> or <b>1.25&times;</b> only flag ranks that are really '
+        'close to the line. Changing it re-colours the table and recounts WARN; FAIL never changes.</p>'
+        '</div>'
+        '<div class="col-lg-6">'
+        '<h6>3 &middot; Min margin vs Ref</h6>'
+        '<p class="mb-1">Per row: <b>Min margin vs Ref = smallest (|margin| &minus; Ref)</b> over both sides of '
+        'every visible parameter, in ticks. <b>Worst</b> names the parameter and side it comes from. It is the '
+        'distance from the rank&rsquo;s weakest margin to the reference: negative = short by that many ticks '
+        '(FAIL); 0 to (<span class="wbm">1</span>&times; Ref) = passes with little guardband (WARN); larger = '
+        'headroom (PASS).</p>'
+        '<p id="rawHelpEx" class="raw-help-ex mb-2"></p>'
+        '<h6>4 &middot; Why it matters &mdash; how to decide</h6>'
+        '<ul class="mb-0">'
+        '<li><span class="rs rs-FAIL">FAIL</span> Treat as a defect. Sort <i>Min margin vs Ref</i> ascending, read '
+        '<i>Worst</i> for the parameter, then check the training step that sets it (Training Steps tab: status '
+        'and post code) and the Mode Registers / ODT tabs for that rank.</li>'
+        '<li><span class="rs rs-WARN">WARN</span> Passes today, but RMT margins move with temperature, voltage, '
+        'DIMM / die and BIOS changes: a rank that passes by a few ticks at room temperature can fail hot or cold. '
+        'Re-check with the thermal (DTR) profile or more samples before signing off.</li>'
+        '<li><span class="rs rs-PASS">PASS</span> Enough guardband; no action.</li>'
+        '<li><b>Comparing runs</b> (BIOS, DIMM, frequency, temperature): a lower <i>Min margin vs Ref</i> for the '
+        'same rank means margin was lost. Use the &Delta; Drift Comparison below for per-parameter detail.</li>'
+        '<li><b>Quick triage:</b> Show &rarr; <i>Below &plusmn;Ref (FAIL)</i> or <i>Near or below &plusmn;Ref</i>, '
+        'then click the <i>Min margin vs Ref</i> header to list the weakest ranks first.</li>'
+        '</ul></div></div></div></details>'
     )
 
 
@@ -4155,6 +4242,7 @@ def generate_html_report(
 
     project_name = project_name or _ACTIVE_PROJECT_NAME
     _limits_html = _build_rmt_limits_html(_ACTIVE_LIMITS_INFO)
+    _raw_help_html = _build_raw_help_html(_ACTIVE_LIMITS_INFO)
 
     def _sf(v):
         """Return a JSON-safe float, or None for NaN/Inf/None."""
@@ -4600,6 +4688,12 @@ def generate_html_report(
         ".raw-table tbody tr:hover td{box-shadow:inset 0 0 0 999px rgba(30,64,175,.06);}",
         ".st-fail,td.st-fail{background:#fee2e2!important;color:#b91c1c;font-weight:700;}",
         ".st-warn,td.st-warn{background:#fef3c7!important;color:#92400e;font-weight:600;}",
+        ".raw-help{border:1px solid #dbe4f0;border-radius:8px;background:#f8fbff;}",
+        ".raw-help>summary{cursor:pointer;padding:8px 12px;font-size:.9rem;color:#0b3d6e;}",
+        ".raw-help-body{padding:4px 14px 12px;font-size:.82rem;line-height:1.45;}",
+        ".raw-help-body h6{font-size:.85rem;font-weight:700;margin:6px 0 4px;color:#1e293b;}",
+        ".raw-help-body li{margin-bottom:3px;}.raw-help-tbl td{padding:3px 6px;vertical-align:middle;}",
+        ".raw-help-ex{background:#fff;border-left:3px solid #0071C5;padding:6px 10px;}",
         ".rs{display:inline-block;min-width:44px;text-align:center;border-radius:999px;padding:0 6px;font-size:.7rem;font-weight:700;color:#fff;}",
         ".rs-PASS{background:#059669;}.rs-WARN{background:#d97706;}.rs-FAIL{background:#dc2626;}",
         ".df-neg{background:#fee2e2;}.df-pos{background:#dcfce7;}",
@@ -4821,12 +4915,13 @@ def generate_html_report(
         '</select></label>',
         '<button class="btn btn-sm btn-outline-secondary" id="rawReset">&#x21BA; Reset filters</button>',
         '</div>',
+        _raw_help_html,
         '<p class="text-muted small mb-2">'
         '<span class="st-fail px-1">Red</span> = weaker than &plusmn;Ref, '
-        '<span class="st-warn px-1">amber</span> = inside the warn band. Heatmap shades each column from '
+        '<span class="st-warn px-1">amber</span> = inside the warn band (see <i>How to read</i> above). '
+        'Heatmap shades each column from '
         'weakest (red) to strongest (green). Numeric filters accept <code>&lt;15</code>, <code>&gt;=20</code>, '
-        '<code>10..20</code> or a value; on margin columns they compare |margin|. Click a header to sort. '
-        'Status / Worst / Min slack use the visible parameters.</p>',
+        '<code>10..20</code> or a value; on margin columns they compare |margin|. Click a header to sort.</p>',
         '<div id="rawCount" class="small fw-semibold mb-1"></div>',
         '<div class="raw-wrap" id="rawWrap"><table id="rawTable" class="raw-table">'
         '<thead></thead><tbody></tbody></table></div>',
@@ -5023,7 +5118,7 @@ function widthOf(r,p){const a=num(r[p+'+']),b=num(r[p+'-']);return (a==null||b==
 function widthSt(w,p){if(w==null)return '';const t=refP(p);if(w<t)return 'FAIL';if(w<t*S.warn)return 'WARN';return 'PASS';}
 function slackOf(r,p,plus){const v=num(r[p+(plus?'+':'-')]);return v==null?null:Math.abs(v)-(plus?refP(p):refM(p));}
 
-/* Row status / worst parameter / min slack over the visible parameters. */
+/* Row status / worst parameter / min margin vs Ref over the visible parameters. */
 function derive(r){
   let worst='',slack=null,st='PASS',any=false;
   const rank={PASS:0,WARN:1,FAIL:2};
@@ -5035,6 +5130,26 @@ function derive(r){
   r._d={st:any?st:'',worst,slack};
 }
 
+/* "How to read" panel: live warn-band numbers + a worked example from the weakest row. */
+function renderHelp(){
+  const box=$id('rawHelp');if(!box)return;
+  box.querySelectorAll('.wbv').forEach(e=>e.textContent=fmt(S.warn));
+  box.querySelectorAll('.wbx').forEach(e=>e.textContent=fmt(40*S.warn));
+  box.querySelectorAll('.wbm').forEach(e=>e.textContent=fmt(S.warn-1));
+  const ex=$id('rawHelpEx');if(!ex)return;
+  let w=null;RAW.forEach(r=>{if(r._d&&r._d.slack!=null&&(w==null||r._d.slack<w._d.slack))w=r;});
+  if(!w){ex.textContent='';return;}
+  const parts=w._d.worst.split(' '),p=parts[0],plus=parts[1]==='+';
+  const v=num(w[p+(plus?'+':'-')]),ref=plus?refP(p):refM(p),s=w._d.slack,st=slackSt(s,ref);
+  const where=esc(w.rank)+' ('+esc(w.lbl)+(w.phase&&w.phase!=='RMT'?', '+esc(w.phase):'')+')';
+  let verdict;
+  if(st==='FAIL')verdict='<b class="text-danger">FAIL</b>: short of the reference by '+fmt(-s)+' ticks.';
+  else if(st==='WARN')verdict='<b style="color:#92400e">WARN</b>: passes, but needs \u2265 '+fmt(ref*S.warn)+' ('+fmt(S.warn)+'\u00d7 Ref) for PASS.';
+  else verdict='<b class="text-success">PASS</b>: '+fmt(s)+' ticks of headroom.';
+  ex.innerHTML='<b>From this data:</b> the weakest row is '+where+'. Worst = <b>'+esc(w._d.worst)+'</b> = '+fmt(v)+
+    ', Ref '+fmt(ref)+' \u2192 |'+fmt(v)+'| \u2212 '+fmt(ref)+' = <b>'+fmt(s)+'</b> ticks \u2192 '+verdict;
+}
+
 function columns(){
   const c=[
     {k:'lbl',h:'File',cat:true,get:r=>r.lbl,tip:r=>r.file,stk:true},
@@ -5044,7 +5159,7 @@ function columns(){
     {k:'gear',h:'Gear',cat:true,numSort:true,get:r=>r.gear},
     {k:'_st',h:'Status',cat:true,get:r=>r._d.st,badge:true},
     {k:'_worst',h:'Worst',cat:true,get:r=>r._d.worst},
-    {k:'_slack',h:'Min slack',get:r=>r._d.slack,st:v=>v==null?'':(v<0?'FAIL':'')},
+    {k:'_slack',h:'Min margin vs Ref',tipH:'Smallest (|margin| \u2212 |Ref|) over the visible parameters and both sides, in RMT ticks. Ref = the \u00b1Ref line in use (WCL: spec RMT limit for the log memory type + frequency; NVL: axis settings, default \u00b110). Negative = below Ref (FAIL); the Worst column names the parameter / side. See "How to read" above the table.',get:r=>r._d.slack,st:(v,r)=>v==null||!r||r._d.st==='PASS'?'':r._d.st},
   ];
   if(S.showTemp){
     c.push({k:'bt',h:'BootTemp',cat:true,numSort:true,get:r=>r.bt==null?'':fmt(r.bt)});
@@ -5122,7 +5237,7 @@ function renderHead(){
   while(i<COLS.length){
     const c=COLS[i];
     if(!c.grp){
-      r1+='<th class="sortable'+(c.stk?' stk':'')+'" data-k="'+esc(c.k)+'" data-ci="'+i+'"'+(hasGrp?' rowspan="2"':'')+'>'+esc(c.h)+sortMark(c.k)+'</th>';
+      r1+='<th class="sortable'+(c.stk?' stk':'')+'" data-k="'+esc(c.k)+'" data-ci="'+i+'"'+(hasGrp?' rowspan="2"':'')+(c.tipH?' title="'+esc(c.tipH)+'"':'')+'>'+esc(c.h)+sortMark(c.k)+'</th>';
       i++;continue;
     }
     let j=i;while(j<COLS.length&&COLS[j].grp===c.grp)j++;
@@ -5187,7 +5302,7 @@ function renderBody(){
       else if(c.cat){txt=esc(raw);}
       else{
         const v=num(raw);txt=fmt(v);cls+=' num';
-        const st=c.st?c.st(v):'';
+        const st=c.st?c.st(v,r):'';
         if(st==='FAIL')cls+=' st-fail';else if(st==='WARN')cls+=' st-warn';else if(S.heat&&c.heat)style=heatBg(c,v,hr);
       }
       const tip=c.tip?' title="'+esc(c.tip(r))+'"':'';
@@ -5205,6 +5320,7 @@ function renderBody(){
     '<span>Page '+(S.page+1)+' of '+pages+'</span>'+
     '<button class="btn btn-sm btn-outline-secondary" id="rawNext"'+(S.page>=pages-1?' disabled':'')+'>Next &raquo;</button>':'';
   if(pages>1){$id('rawPrev').onclick=()=>{S.page--;renderBody();};$id('rawNext').onclick=()=>{S.page++;renderBody();};}
+  renderHelp();
   requestAnimationFrame(layoutSticky);
   renderDrift();
 }

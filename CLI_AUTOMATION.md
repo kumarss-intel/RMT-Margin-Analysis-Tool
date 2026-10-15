@@ -303,9 +303,13 @@ Values are RMT ticks: timing = UI/64 PI ticks, voltage = Vref steps. `<Param>-` 
   "tool": "MarginIQ 2.0.0",
   "project": "WCL",
   "training_steps": [            // MRC task timeline per log
+    {"task_type": "GREEN MRC", "name": "Read Voltage Centering", "status": "SUCCEEDED",
+     "status_code": "0h", "start_line": 10427, "end_line": 10842, "iteration": 0,
+     "source": "teraterm_17092026.log", "post_code": "DD57h"},   // POST code printed just before "Started" (null if none)
     {"task_type": "GREEN MRC", "name": "DDRIO Config", "status": "INCOMPLETE",  // SUCCEEDED|FAILED|RUNNING|INCOMPLETE
      "status_code": null, "start_line": 1648, "end_line": null, "iteration": 0,
-     "source": "teraterm_17092026.log", "note": "end line missing - log gap between lines 1648 and 2857"}
+     "source": "teraterm_17092026.log", "post_code": "DD12h",
+     "note": "end line missing - log gap between lines 1648 and 2857"}
   ],
   "platform_infos": [            // one per log
     {"source_file": "...", "board": "WCL LP5 RVP2", "platform_variant": "WCL LPDDR5 RVP",
